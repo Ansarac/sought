@@ -206,11 +206,15 @@ def _tls_note(cfg: Config, *, probes: list[Check]) -> Check | None:
             "browser TLS",
             ok=False,
             detail=(
-                f"{', '.join(failing)} failed on a certificate. Chromium does not read the OS "
-                "trust store, so behind a TLS-inspecting proxy it rejects the proxy's CA even "
-                "though the rest of this machine trusts it. Set tls.browser_ignore_cert_errors "
-                "= true to use them anyway — the browser then accepts any certificate, which is "
-                "the trade. marginalia and the vertical sources are unaffected either way."
+                f"{', '.join(failing)} failed on a certificate. Chromium reads its own NSS "
+                "database, not the OS trust store, so behind a TLS-inspecting proxy it rejects "
+                "a CA the rest of this machine trusts. Import that CA and verification stays on:\n"
+                "      certutil -d sql:$HOME/.pki/nssdb -A -t 'C,,' -n proxy-ca -i <ca>.crt\n"
+                "      (needs libnss3-tools; `certutil -d sql:$HOME/.pki/nssdb -N --empty-password` "
+                "first if the database does not exist yet)\n"
+                "      Only if that is not possible, tls.browser_ignore_cert_errors = true makes "
+                "the browser accept any certificate instead. marginalia and the vertical sources "
+                "are unaffected either way."
             ),
             required=False,
         )

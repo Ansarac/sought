@@ -55,9 +55,18 @@ on.
 
 **`browser_ignore_cert_errors` is different** — it genuinely disables
 verification, for the browser only, and only because Chromium does not read
-the OS trust store. It defaults to `false`; behind a TLS-inspecting proxy the
-user opts in. Keep it configurable and keep the trade-off documented where a
-user will see it.
+the OS trust store. It defaults to `false`. Keep it configurable and keep the
+trade-off documented where a user will see it.
+
+**Do not present that flag as the fix for a TLS-inspecting proxy.** Chromium
+on Linux reads a per-user NSS database at `~/.pki/nssdb`, which does not exist
+until something creates it — the OS-installed proxy CA is unseen because
+nobody put it where the browser looks, not because the browser cannot verify.
+Measured: with the database absent, `brave` fails `ERR_CERT_AUTHORITY_INVALID`;
+after `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n proxy-ca -i <root>.crt`,
+`brave` and `startpage` both succeed with `browser_ignore_cert_errors = false`.
+Import the root of the chain, not the intermediate. `doctor` recommends this
+route first and the flag only as a fallback; keep that ordering.
 
 **Use the Playwright Python bindings, not `playwright-cli`.** The CLI is a
 stateful interactive driver (`open` / `goto` / `click e15` / `snapshot`) built

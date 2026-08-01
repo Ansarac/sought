@@ -215,10 +215,33 @@ on. Leave this true.
 Chromium does not read the OS trust store, so behind a TLS-inspecting proxy
 every browser engine dies with `ERR_CERT_AUTHORITY_INVALID` — `doctor` will
 report exactly that — leaving `marginalia` and the vertical sources working.
-Setting it to `true` is what makes `brave` and `startpage` work again, at the
-cost of disabling certificate verification for the browser, which on a network
-you do not control would expose those requests to interception. Opt in only
-where you know why the certificates are being re-signed:
+Setting it to `true` makes `brave` and `startpage` work again by disabling
+certificate verification for the browser, which on a network you do not
+control would expose those requests to interception.
+
+**Usually you do not have to make that trade.** On Linux, Chromium reads a
+per-user NSS database rather than the OS trust store, and it is empty by
+default — that, not a missing feature, is why the OS-installed proxy CA goes
+unseen. Import the CA there and the browser engines work with verification
+fully on:
+
+```bash
+sudo apt install libnss3-tools                                  # provides certutil
+mkdir -p ~/.pki/nssdb
+certutil -d sql:$HOME/.pki/nssdb -N --empty-password            # first time only
+certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n proxy-ca -i /path/to/root-ca.crt
+```
+
+Import the **root** of the chain, not the leaf. `openssl s_client -connect
+example.com:443 -showcerts` prints it, and on Debian and Ubuntu a CA the
+system already trusts is usually in `/usr/local/share/ca-certificates/`.
+
+Measured on a TLS-inspecting corporate proxy: with the database absent,
+`brave` reports `blocked` / `ERR_CERT_AUTHORITY_INVALID`; with the root CA
+imported, `brave` and `startpage` both return results and
+`browser_ignore_cert_errors` stays `false`.
+
+Reach for the flag only where importing a CA is not possible:
 
 ```toml
 [tls]
