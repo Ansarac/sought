@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scout import config as config_mod
-from scout.engines.base import GENERAL_ENGINES
+from sought import config as config_mod
+from sought.engines.base import BROWSER_ENGINES, GENERAL_ENGINES
 
 if TYPE_CHECKING:
-    from scout.config import Config
+    from sought.config import Config
 
 MIN_PYTHON = (3, 13)
 
@@ -46,15 +46,22 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
     chromium = _chromium(fix=fix)
     checks.append(chromium)
     checks.extend(_config_checks(cfg))
-    checks.append(_tls_note(cfg))
     checks.extend(_proxy_checks(cfg))
 
+    # Probe first, report after: whether browser TLS is worth mentioning
+    # depends on whether the browser engines are actually failing on a
+    # certificate, and the probes are the only thing that knows.
     if offline:
-        checks.append(Check("engines", ok=True, detail="skipped (--offline)", required=False))
+        probes = [Check("engines", ok=True, detail="skipped (--offline)", required=False)]
     else:
-        checks.extend(_engine_probes(cfg, chromium_ok=chromium.ok))
+        probes = _engine_probes(cfg, chromium_ok=chromium.ok)
 
-    print("scout doctor\n")
+    tls = _tls_note(cfg, probes=probes)
+    if tls is not None:
+        checks.append(tls)
+    checks.extend(probes)
+
+    print("sought doctor\n")
     for c in checks:
         print(f"  {c.mark} {c.name}: {c.detail}")
 
@@ -94,7 +101,7 @@ def _chromium(*, fix: bool) -> Check:
         return Check(
             "chromium binary",
             ok=False,
-            detail="not found — run `scout doctor --fix` or `playwright install chromium`",
+            detail="not found — run `sought doctor --fix` or `playwright install chromium`",
         )
 
     print("installing chromium ...", flush=True)
@@ -144,7 +151,7 @@ def _config_checks(cfg: Config) -> list[Check]:
         where = Check(
             "config file",
             ok=True,
-            detail=f"{path} (absent — using builtin defaults; `scout config --init` writes one)",
+            detail=f"{path} (absent — using builtin defaults; `sought config --init` writes one)",
             required=False,
         )
 
@@ -158,40 +165,117 @@ def _config_checks(cfg: Config) -> list[Check]:
     return [where, order]
 
 
-def _tls_note(cfg: Config) -> Check:
-    if not cfg.browser_ignore_cert_errors:
+# Substrings of a Playwright/Chromium certificate rejection, lowercased.
+_CERT_ERROR_MARKERS = ("err_cert", "certificate", "ssl")
+
+
+def _tls_note(cfg: Config, *, probes: list[Check]) -> Check | None:
+    """Report on browser certificate verification — but only when there is something to report.
+
+    Verification is on by default, which is right, so three situations have to
+    read differently:
+
+    * On, and the browser engines are fine. Nothing to say. Warning every
+      healthy install about a TLS-inspecting proxy it does not have is how a
+      report full of harmless `!` marks teaches people to skip the report.
+    * On, and a browser engine just failed on a certificate. The one case worth
+      surfacing, with the remedy and with what the remedy costs.
+    * Off. A real security posture, restated every run so it cannot quietly
+      become permanent.
+
+    Never required: none of these should fail a run on their own. A browser
+    engine that cannot connect is already reported as its own probe, and the
+    chain exists so that one engine down is survivable.
+    """
+    if cfg.browser_ignore_cert_errors:
         return Check(
             "browser TLS",
             ok=False,
             detail=(
-                "tls.browser_ignore_cert_errors = false. Correct on a clean network. "
-                "Behind a TLS-inspecting proxy it disables brave and startpage entirely, "
-                "because Chromium does not read the OS trust store."
+                "certificate verification is DISABLED for the browser "
+                "(tls.browser_ignore_cert_errors = true) — brave and startpage will accept any "
+                "certificate, a hostile one included. Correct behind a TLS-inspecting proxy, "
+                "wrong on a network you do not control."
             ),
             required=False,
         )
-    return Check(
-        "browser TLS",
-        ok=True,
-        detail="chromium accepts the local proxy CA (tls.browser_ignore_cert_errors = true)",
-    )
+
+    failing = _cert_failures(probes)
+    if failing:
+        return Check(
+            "browser TLS",
+            ok=False,
+            detail=(
+                f"{', '.join(failing)} failed on a certificate. Chromium does not read the OS "
+                "trust store, so behind a TLS-inspecting proxy it rejects the proxy's CA even "
+                "though the rest of this machine trusts it. Set tls.browser_ignore_cert_errors "
+                "= true to use them anyway — the browser then accepts any certificate, which is "
+                "the trade. marginalia and the vertical sources are unaffected either way."
+            ),
+            required=False,
+        )
+
+    return None
+
+
+def _cert_failures(probes: list[Check]) -> list[str]:
+    """Names of the browser engines whose probe failed on a certificate."""
+    wanted = {f"engine {name}" for name in BROWSER_ENGINES}
+    return [
+        c.name.removeprefix("engine ")
+        for c in probes
+        if c.name in wanted and not c.ok and any(m in c.detail.lower() for m in _CERT_ERROR_MARKERS)
+    ]
 
 
 def _proxy_checks(cfg: Config) -> list[Check]:
     import os
 
+    # Both transports go through whatever is reported here, and saying so is
+    # the point: a green proxy line above a red `marginalia: Connection
+    # refused` should tell the reader where to look, not just that a variable
+    # was set.
+    reach = "HTTP client and browser"
     if cfg.proxy.any_set:
-        detail = f"config: https={cfg.proxy.https or '-'} http={cfg.proxy.http or '-'}"
+        detail = (
+            f"config ({reach}): https={_redact(cfg.proxy.https) or '-'} http={_redact(cfg.proxy.http) or '-'}"
+            f" no_proxy={cfg.proxy.no_proxy_value() or '-'}"
+        )
     else:
         env = {k: os.environ.get(k, "") for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
-        live = [f"{k}={v}" for k, v in env.items() if v]
-        detail = "inherited from environment: " + (", ".join(live) if live else "none set (direct connection)")
+        live = [f"{k}={_redact(v)}" for k, v in env.items() if v]
+        detail = (
+            f"inherited from environment ({reach}): " + ", ".join(live)
+            if live
+            else "none set — all engines connect directly"
+        )
     return [Check("proxy", ok=True, detail=detail, required=False)]
+
+
+def _redact(url: str) -> str:
+    """Strip the `user:password@` out of a proxy URL, keeping the rest readable.
+
+    The documented troubleshooting flow is "run doctor, paste the output into
+    the bug report", so anything printed here should be assumed to be heading
+    for a public issue tracker. Scheme, host and port are what makes the line
+    worth printing at all and stay; credentials do not.
+
+    Split on the *last* `@`, because a password may contain both `@` and `:`.
+    """
+    if not url:
+        return url
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        scheme, rest = "", url
+    if "@" not in rest:
+        return url
+    _userinfo, _, host = rest.rpartition("@")
+    return f"{scheme}://***@{host}" if sep else f"***@{host}"
 
 
 def _engine_probes(cfg: Config, *, chromium_ok: bool) -> list[Check]:
     """Ask each configured engine one cheap real query."""
-    from scout.search import run as search_run
+    from sought.search import run as search_run
 
     checks: list[Check] = []
     probed = 0
@@ -202,7 +286,7 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool) -> list[Check]:
             checks.append(Check(f"engine {name}", ok=False, detail="skipped: no chromium", required=False))
             continue
         probed += 1
-        payload = search_run("scout self test", config=cfg, source=name)
+        payload = search_run("sought self test", config=cfg, source=name)
         attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
         ok = attempt["status"] == "ok"
         detail = f"{attempt.get('count', 0)} results" if ok else f"{attempt['status']} — {attempt.get('detail', '')}"

@@ -1,7 +1,7 @@
 default:
     @just --list
 
-# Install dependencies and the browser scout needs.
+# Install dependencies and the browser sought needs.
 setup:
     uv sync
     uv run playwright install chromium
@@ -19,8 +19,8 @@ check: lint test
 
 # Self-check without touching the network.
 doctor:
-    uv run scout doctor --offline
+    uv run sought doctor --offline
 
-# Install scout globally from this checkout.
+# Install sought globally from this checkout.
 install:
     uv tool install --force .

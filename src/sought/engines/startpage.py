@@ -11,12 +11,12 @@ import re
 from typing import TYPE_CHECKING
 from urllib.parse import quote_plus
 
-from scout.browser import goto
-from scout.engines.base import EngineFailure, Result
+from sought.browser import extract, goto
+from sought.engines.base import EngineFailure, Result
 
 if TYPE_CHECKING:
-    from scout.browser import Browser
-    from scout.config import Config
+    from sought.browser import Browser
+    from sought.config import Config
 
 NAME = "startpage"
 _RESULTS_CONTAINER = ".w-gl"
@@ -68,7 +68,7 @@ def search(query: str, *, config: Config, browser: Browser | None) -> list[Resul
         if not _GOOD_TITLE.search(doc_title):
             raise EngineFailure("blocked", f"unexpected page title {doc_title!r}")
 
-        rows = page.evaluate(_EXTRACT, _ITEM)
+        rows = extract(page, _EXTRACT, _ITEM, timeout_ms=browser.timeout_ms)
 
     results = [Result(title=r["title"], url=r["url"], snippet=r["snippet"]) for r in rows][: config.limit]
     if not results:

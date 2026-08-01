@@ -8,7 +8,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from scout.engines.base import Attempt, Result
+    from sought.engines.base import Attempt, Result
 
 _STATUS_HINT = {
     "rate_limited": "quota exhausted for now — retry later or reorder engines",

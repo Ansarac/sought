@@ -13,18 +13,24 @@ from typing import TYPE_CHECKING, Any
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
-from scout.engines.base import EngineFailure, Result
-from scout.net import session
+from sought.engines.base import EngineFailure, Result
+from sought.net import session
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     import requests
 
-    from scout.config import Config
+    from sought.config import Config
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_HTTP_BAD_REQUEST = 400
+_HTTP_FORBIDDEN = 403
 _HTTP_TOO_MANY_REQUESTS = 429
+
+# Enough of the body to find a reason code in, and not enough to hold a whole
+# error page in memory.
+_BODY_PEEK = 500
 
 
 def search(source: str, query: str, *, config: Config) -> list[Result]:
@@ -50,13 +56,43 @@ def _guard(fn: Callable[[], list[Result]]) -> list[Result]:
     except requests.Timeout as exc:
         raise EngineFailure("timeout", "no response in time") from exc
     except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else 0
-        kind = "rate_limited" if status == _HTTP_TOO_MANY_REQUESTS else "blocked"
-        raise EngineFailure(kind, f"HTTP {status}") from exc
+        raise _classify_http_error(exc) from exc
     except requests.RequestException as exc:
         raise EngineFailure("blocked", str(exc).strip().splitlines()[0]) from exc
     except (ValueError, KeyError, ElementTree.ParseError, DefusedXmlException) as exc:
         raise EngineFailure("error", f"unparseable response: {exc}") from exc
+
+
+def _classify_http_error(exc: requests.HTTPError) -> EngineFailure:
+    """Tell quota exhaustion apart from refusal, including where it does not say 429.
+
+    `rate_limited` and `blocked` earn opposite advice — wait, versus stop
+    asking this way — so guessing from the status line alone is not good
+    enough. Two of these sources are known to spell quota exhaustion in their
+    own way:
+
+    * GitHub answers an over-quota unauthenticated search with 403, not 429,
+      and puts the counter in `x-ratelimit-remaining`.
+    * StackExchange answers a throttled request with 400 and says
+      `throttle_violation` only in the body.
+
+    Both used to be reported as `blocked`, which sent the user off to debug a
+    network that was working.
+    """
+    resp = exc.response
+    status = resp.status_code if resp is not None else 0
+
+    if status == _HTTP_TOO_MANY_REQUESTS:
+        return EngineFailure("rate_limited", "HTTP 429")
+
+    if resp is not None:
+        body = resp.text[:_BODY_PEEK].lower()
+        if status == _HTTP_FORBIDDEN and (resp.headers.get("x-ratelimit-remaining") == "0" or "rate limit" in body):
+            return EngineFailure("rate_limited", "HTTP 403: API rate limit exceeded")
+        if status == _HTTP_BAD_REQUEST and "throttle_violation" in body:
+            return EngineFailure("rate_limited", "HTTP 400: throttle_violation")
+
+    return EngineFailure("blocked", f"HTTP {status}")
 
 
 def _json(sess: requests.Session, url: str, params: dict[str, Any], config: Config) -> Any:  # noqa: ANN401

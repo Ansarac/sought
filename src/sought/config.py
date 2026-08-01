@@ -1,4 +1,4 @@
-"""Configuration loading from ~/.config/scout/config.toml.
+"""Configuration loading from ~/.config/sought/config.toml.
 
 Precedence, highest first: CLI flags > config file > environment > builtin
 defaults. The CLI layer applies its own overrides on top of what `load()`
@@ -12,9 +12,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scout.errors import ConfigError
+from sought.errors import ConfigError
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "scout"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sought"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 DEFAULT_ORDER = ("brave", "startpage", "marginalia")
@@ -22,12 +22,12 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_LIMIT = 10
 
 DEFAULT_CONFIG_TEMPLATE = """\
-# scout configuration — https://github.com/  (local project)
+# sought configuration — https://github.com/Ansarac/sought
 # Precedence: CLI flags > this file > environment variables > builtin defaults.
 
 [proxy]
 # Leave both empty to inherit HTTP_PROXY / HTTPS_PROXY / NO_PROXY from the
-# environment. Set them here when you want scout to use a proxy that the rest
+# environment. Set them here when you want sought to use a proxy that the rest
 # of your shell does not.
 http = ""
 https = ""
@@ -46,12 +46,23 @@ limit = 10
 # Verify against the OS trust store instead of certifi's static bundle. Behind
 # a TLS-inspecting corporate proxy this is required, and it raises no security
 # bar and lowers none — the proxy CA is one your machine already trusts.
+# This is the safe knob. Leave it on.
 system_trust = true
 
-# Chromium does not read the OS trust store, so behind the same proxy every
-# browser engine dies with ERR_CERT_AUTHORITY_INVALID. Setting this to false
-# disables brave and startpage entirely; `scout doctor` will say so plainly.
-browser_ignore_cert_errors = true
+# DANGER — this one genuinely turns TLS verification OFF, for the browser only.
+# It defaults to false and you must opt in deliberately.
+#
+# Why you might: Chromium does not read the OS trust store, so behind a
+# TLS-inspecting proxy every browser engine dies with
+# ERR_CERT_AUTHORITY_INVALID. Setting this to true is the only way to use the
+# `brave` and `startpage` engines on such a network — at the cost of the
+# browser accepting *any* certificate, including a hostile one.
+#
+# Why you might not: with it false, `brave` and `startpage` simply fail (and
+# `sought doctor` will say so plainly), while `marginalia` and every vertical
+# source keep working — they go through the `requests` path above, which
+# verifies against the OS trust store and is unaffected.
+browser_ignore_cert_errors = false
 """
 
 
@@ -69,7 +80,13 @@ class ProxyConfig:
         return bool(self.http or self.https)
 
     def as_requests_mapping(self) -> dict[str, str] | None:
-        """Return a requests-style proxies mapping, or None to inherit from env."""
+        """Return a requests-style proxies mapping, or None to inherit from env.
+
+        `no_proxy` is included under the key requests documents for it, but
+        requests only consults that key when deciding whether to adopt a proxy
+        from the *environment*. Against an explicitly-set proxy it is inert, so
+        `sought.net` enforces the bypass itself as well.
+        """
         if not self.any_set:
             return None
         mapping = {}
@@ -77,23 +94,38 @@ class ProxyConfig:
             mapping["http"] = self.http
         if self.https:
             mapping["https"] = self.https
+        bypass = self.no_proxy_value()
+        if bypass:
+            mapping["no_proxy"] = bypass
         return mapping
 
+    def no_proxy_value(self) -> str:
+        """Return the bypass list in the comma-separated form requests and Chromium both expect."""
+        return ",".join(self.no_proxy)
+
     def browser_server(self) -> str | None:
-        """Return the proxy URL for Playwright, which ignores the environment."""
+        """Return the proxy URL to hand Playwright, or None to leave it alone.
+
+        Chromium *does* read the proxy environment — measured, both cases. The
+        reason to pass it explicitly anyway is that the two transports resolve
+        a conflict differently: Chromium prefers the lowercase `http_proxy`,
+        while Python's `getproxies_environment()` folds both cases together and
+        is effectively last-one-wins over `os.environ` order. Setting it here
+        removes that ambiguity and makes the config file authoritative.
+        """
         return self.https or self.http or None
 
 
 @dataclass(frozen=True)
 class Config:
-    """Everything scout reads out of the config file."""
+    """Everything sought reads out of the config file."""
 
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     order: tuple[str, ...] = DEFAULT_ORDER
     timeout_seconds: int = DEFAULT_TIMEOUT
     limit: int = DEFAULT_LIMIT
     system_trust: bool = True
-    browser_ignore_cert_errors: bool = True
+    browser_ignore_cert_errors: bool = False
     source_path: Path | None = None
 
 
@@ -143,11 +175,15 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
             no_proxy=tuple(_str_list(proxy_raw.get("no_proxy", ()), "proxy.no_proxy", path)),
         ),
         order=order,
-        timeout_seconds=_int(engines_raw.get("timeout_seconds", DEFAULT_TIMEOUT), "engines.timeout_seconds", path),
-        limit=_int(engines_raw.get("limit", DEFAULT_LIMIT), "engines.limit", path),
+        timeout_seconds=positive_int(
+            engines_raw.get("timeout_seconds", DEFAULT_TIMEOUT),
+            "engines.timeout_seconds",
+            path,
+        ),
+        limit=positive_int(engines_raw.get("limit", DEFAULT_LIMIT), "engines.limit", path),
         system_trust=_bool(tls_raw.get("system_trust", True), "tls.system_trust", path),
         browser_ignore_cert_errors=_bool(
-            tls_raw.get("browser_ignore_cert_errors", True),
+            tls_raw.get("browser_ignore_cert_errors", False),
             "tls.browser_ignore_cert_errors",
             path,
         ),
@@ -170,9 +206,18 @@ def _str(value: object, key: str, path: Path | None) -> str:
     return value
 
 
-def _int(value: object, key: str, path: Path | None) -> int:
+def positive_int(value: object, key: str, path: Path | None = None) -> int:
+    """Validate a positive integer, for the config file and for CLI overrides alike.
+
+    Public because the CLI applies `--limit` / `--timeout` with
+    `dataclasses.replace`, which walks straight past this module. A limit of 0
+    is not a smaller search and a timeout of 0 is not a shorter one — the first
+    makes every engine report `empty` (a false statement about the web) and the
+    second means "wait forever" to Playwright.
+    """
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        msg = f"{path}: {key} must be a positive integer"
+        where = f"{path}: " if path is not None else ""
+        msg = f"{where}{key} must be a positive integer"
         raise ConfigError(msg)
     return value
 

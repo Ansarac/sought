@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scout.engines.marginalia import parse
+from sought.engines.marginalia import parse
 
 PAGE = """
 <html><body>

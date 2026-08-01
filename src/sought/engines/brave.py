@@ -9,12 +9,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from urllib.parse import quote_plus
 
-from scout.browser import goto
-from scout.engines.base import EngineFailure, Result
+from sought.browser import extract, goto
+from sought.engines.base import EngineFailure, Result
 
 if TYPE_CHECKING:
-    from scout.browser import Browser
-    from scout.config import Config
+    from sought.browser import Browser
+    from sought.config import Config
 
 NAME = "brave"
 _RESULTS_CONTAINER = "#results"
@@ -45,7 +45,7 @@ def search(query: str, *, config: Config, browser: Browser | None) -> list[Resul
     url = f"https://search.brave.com/search?q={quote_plus(query)}"
     with browser.page() as page:
         goto(page, url, wait_for=_RESULTS_CONTAINER)
-        rows = page.evaluate(_EXTRACT, _ITEM)
+        rows = extract(page, _EXTRACT, _ITEM, timeout_ms=browser.timeout_ms)
 
     results = [Result(title=r["title"], url=r["url"], snippet=r["snippet"]) for r in rows][: config.limit]
     if not results:

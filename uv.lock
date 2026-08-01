@@ -267,8 +267,7 @@ wheels = [
 ]
 
 [[package]]
-name = "scout"
-version = "0.1.0"
+name = "sought"
 source = { editable = "." }
 dependencies = [
     { name = "defusedxml" },

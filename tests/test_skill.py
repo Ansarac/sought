@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from scout import skill as skill_mod
-from scout.errors import ScoutError
+from sought import skill as skill_mod
+from sought.errors import SoughtError
 
 
 def test_the_skill_resolves_in_this_checkout():
-    """Whichever branch fires, an installed scout must find its skill."""
+    """Whichever branch fires, an installed sought must find its skill."""
     path, branch = skill_mod.locate_skill()
     assert path.is_file()
     assert branch in {"packaged", "source"}
@@ -23,21 +23,21 @@ def test_the_skill_resolves_in_this_checkout():
 
 def test_the_source_branch_finds_a_checkout_layout(tmp_path):
     repo = tmp_path / "repo"
-    anchor = repo / "src" / "scout" / "skill.py"
+    anchor = repo / "src" / "sought" / "skill.py"
     anchor.parent.mkdir(parents=True)
     anchor.touch()
-    wanted = repo / "skills" / "scout" / "SKILL.md"
+    wanted = repo / "skills" / "sought" / "SKILL.md"
     wanted.parent.mkdir(parents=True)
     wanted.write_text("# skill", encoding="utf-8")
 
-    assert skill_mod._from_source("scout", anchor) == wanted  # noqa: SLF001
+    assert skill_mod._from_source("sought", anchor) == wanted  # noqa: SLF001
 
 
 def test_the_source_branch_declines_when_there_is_no_checkout(tmp_path):
     anchor = tmp_path / "a" / "b" / "skill.py"
     anchor.parent.mkdir(parents=True)
     anchor.touch()
-    assert skill_mod._from_source("scout", anchor) is None  # noqa: SLF001
+    assert skill_mod._from_source("sought", anchor) is None  # noqa: SLF001
 
 
 def test_the_packaged_branch_declines_for_a_package_without_one():
@@ -47,19 +47,19 @@ def test_the_packaged_branch_declines_for_a_package_without_one():
 def test_neither_branch_matching_is_an_error_not_a_silent_miss(monkeypatch, tmp_path):
     monkeypatch.setattr(skill_mod, "_packaged", lambda _pkg: None)
     monkeypatch.setattr(skill_mod, "_from_source", lambda _name, _anchor: None)
-    with pytest.raises(ScoutError, match=r"cannot find SKILL\.md"):
+    with pytest.raises(SoughtError, match=r"cannot find SKILL\.md"):
         skill_mod.locate_skill(anchor=tmp_path / "skill.py")
 
 
 def test_install_writes_the_file(tmp_path):
     dest = skill_mod.install_skill(dest_root=tmp_path)
-    assert dest == tmp_path / "scout" / "SKILL.md"
+    assert dest == tmp_path / "sought" / "SKILL.md"
     assert dest.read_text(encoding="utf-8").lstrip().startswith("---")
 
 
 def test_install_refuses_to_clobber_without_force(tmp_path):
     skill_mod.install_skill(dest_root=tmp_path)
-    with pytest.raises(ScoutError, match="--force"):
+    with pytest.raises(SoughtError, match="--force"):
         skill_mod.install_skill(dest_root=tmp_path)
 
 

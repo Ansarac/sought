@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
-    from scout.browser import Browser
-    from scout.config import Config
+    from sought.browser import Browser
+    from sought.config import Config
 
 Status = Literal["ok", "rate_limited", "blocked", "empty", "timeout", "error"]
 
@@ -43,7 +43,7 @@ class Attempt:
     """The record of one engine being asked, successfully or not.
 
     Every engine consulted produces one of these, including the ones that
-    failed. An empty result set with no attempts is the one output scout must
+    failed. An empty result set with no attempts is the one output sought must
     never produce.
     """
 
@@ -125,27 +125,80 @@ _STOPWORDS = frozenset(
 )
 _MIN_TOKEN_LEN = 3
 
+# A token found only in the URL earns partial credit. A domain or a path
+# segment containing the word is not the page discussing the subject, and
+# counting it in full lets any result on `npmjs.com` vouch for "npm registry".
+_URL_CREDIT = 0.4
+
+# The best result must cover this weighted fraction of the query's tokens.
+# Half is deliberately demanding; see detect_low_relevance for why erring
+# toward flagging is the correct direction here.
+_RELEVANCE_THRESHOLD = 0.5
+
 
 def query_tokens(query: str) -> list[str]:
     """Significant lowercase tokens of a query, for relevance checking."""
     return [t for t in _TOKEN_RE.findall(query.lower()) if len(t) >= _MIN_TOKEN_LEN and t not in _STOPWORDS]
 
 
+def _tokens(text: str) -> set[str]:
+    """Tokenise arbitrary text the same way a query is tokenised."""
+    return set(_TOKEN_RE.findall(text.lower()))
+
+
+def relevance_score(tokens: list[str], result: Result) -> float:
+    """Weighted fraction of the query's tokens that one result actually covers.
+
+    Tokens are weighted by length as a cheap stand-in for rarity: covering
+    "blorptangle" says far more than covering "app". Title and snippet count in
+    full, the URL only partially.
+    """
+    wanted = set(tokens)
+    if not wanted:
+        return 1.0
+
+    strong = _tokens(f"{result.title} {result.snippet}")
+    weak = _tokens(result.url)
+
+    total = 0.0
+    covered = 0.0
+    for token in wanted:
+        weight = float(len(token))
+        total += weight
+        if token in strong:
+            covered += weight
+        elif token in weak:
+            covered += weight * _URL_CREDIT
+    return covered / total
+
+
 def detect_low_relevance(query: str, results: list[Result]) -> bool:
-    """Report whether no result mentions any significant query token.
+    """Report whether even the best result fails to cover the query.
 
     Some engines answer a blocked request with a page of plausible but
     unrelated results — HTTP 200, well-formed, completely wrong. There is no
-    error to catch, so this heuristic is the only signal. It is deliberately
-    biased toward false positives: a spurious warning costs a second glance,
-    a missed one costs a wrong answer.
+    error to catch, so this heuristic is the only signal, and it is
+    deliberately biased toward false positives: a spurious warning costs a
+    second glance, a missed one costs a wrong answer.
+
+    Three things this must not do, each of which it used to:
+
+    * Match substrings. `"rust" in "trustpilot"` and `"mail" in "hotmail"` are
+      not mentions, and `"nat"` is not satisfied by "alternative". Both sides
+      are tokenised and compared as whole words.
+    * Union across the result set. Asking whether *any* result matched *any*
+      token meant one hit anywhere disarmed the check for everything.
+      Measured: the nonsense query "zqxjkvwmpf blorptangle 77 unfindable" came
+      back unflagged because a single title happened to contain "unfindable"
+      while both distinctive tokens matched nothing at all. Each result is now
+      scored on its own and only the best one is judged.
+    * Treat the URL as content. See `_URL_CREDIT`.
+
+    The consequence worth stating plainly: a query of pure nonsense is flagged
+    whatever the engine returns, because nothing can cover it.
     """
     tokens = query_tokens(query)
     if not tokens or not results:
         return False
 
-    for r in results:
-        haystack = f"{r.title} {r.url} {r.snippet}".lower()
-        if any(t in haystack for t in tokens):
-            return False
-    return True
+    return max(relevance_score(tokens, r) for r in results) < _RELEVANCE_THRESHOLD

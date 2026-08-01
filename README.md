@@ -1,15 +1,19 @@
-# scout
+# sought
 
-A search CLI for networks that fight back. It degrades across independent
-engines and tells you exactly what it tried.
+A search CLI that never fails silently. It degrades across independent engines
+and tells you exactly what it tried.
 
-The design goal is not breadth of coverage. It is that **scout never silently
-returns a wrong or empty answer**.
+The design goal is not breadth of coverage. It is that **sought never quietly
+returns a wrong or empty answer**. Every search comes back with an audit trail:
+which engines were asked, in what order, and what each one did. That matters
+most when something else is consuming the output — an agent, a script, a
+pipeline — and has no way to eyeball a results page and notice it looks wrong.
 
-## Why this exists
+## Why it works this way
 
-Three findings, each measured on a corporate network with a TLS-inspecting
-proxy and a shared NAT egress IP, shaped everything below.
+Three findings shaped the design. All were measured, and the first and third
+apply on any network at all; the second shows up wherever traffic leaves
+through a shared egress IP or a filtering proxy.
 
 **1. Fetching a search results page is worse than useless.** Bing does not
 block scrapers; it poisons them. Three consecutive queries fetched as plain
@@ -20,31 +24,45 @@ than one that fails loudly, because nothing downstream can tell.
 **2. Plain HTTP clients get refused; a real browser does not.** At the same
 moment, `curl https://search.brave.com/...` returned 429 while Playwright
 loading the identical URL returned results. Any scraper built on an HTTP
-client alone is not usable here, whatever its engine list claims.
+client alone is not usable in those conditions, whatever its engine list
+claims.
 
 **3. Relevance scores can launder garbage.** One tool under evaluation ran the
 poisoned results through an ML reranker and assigned the unrelated pages a
 relevance score of 0.38. A number next to a wrong answer is worse than no
 number.
 
-So scout uses a real browser where one is required, keeps a full audit trail of
-every engine it consulted, and flags results that do not mention the query.
+So sought uses a real browser where one is required, keeps a full audit trail
+of every engine it consulted, and flags results that do not mention the query.
 
 ## Install
 
 ```bash
+uv tool install git+https://github.com/Ansarac/sought
+```
+
+Or from a checkout:
+
+```bash
+git clone https://github.com/Ansarac/sought
+cd sought
 uv tool install .
-scout doctor --fix          # installs chromium if missing
-scout install-skill         # optional: install the Claude skill
+```
+
+Then:
+
+```bash
+sought doctor --fix          # installs chromium if missing
+sought install-skill         # optional: install the Claude skill
 ```
 
 ## Use
 
 ```bash
-scout "playwright bypass cloudflare"           # JSON (default)
-scout "rust async runtimes" --pretty           # table
-scout "MCP web search" --source hn             # one vertical source
-scout "playwright" --source npm --limit 5
+sought "playwright bypass cloudflare"           # JSON (default)
+sought "rust async runtimes" --pretty           # table
+sought "MCP web search" --source hn             # one vertical source
+sought "playwright" --source npm --limit 5
 ```
 
 Output is JSON by default because the envelope carries the audit trail:
@@ -82,10 +100,22 @@ opposite responses: reword the query, versus wait or use another engine.
 
 ### `low_relevance`
 
-Set when not one result mentions any significant token of the query. This is
-the only available signal against a poisoned results page, since such a page
-arrives as a valid HTTP 200. It is deliberately biased toward false positives —
-a spurious warning costs a second glance, a missed one costs a wrong answer.
+Set when even the best single result fails to cover the query. Each result is
+scored on its own — whole-token matches, weighted so a rare term counts for
+more than a common one, with the URL given partial credit — and the flag is
+raised when the strongest of them still falls short.
+
+Scoring per result rather than across the set is the load-bearing part. A
+union check ("did *any* result mention *any* token?") is disarmed by a single
+incidental hit: the nonsense query `zqxjkvwmpf blorptangle 77 unfindable` went
+unflagged because one title happened to contain "unfindable" while both
+distinctive tokens matched nothing.
+
+This is the only available signal against a poisoned results page, since such
+a page arrives as a valid HTTP 200. It is deliberately biased toward false
+positives — a spurious warning costs a second glance, a missed one costs a
+wrong answer. A query of pure nonsense is always flagged, whatever the engine
+returns.
 
 ### Exit codes
 
@@ -101,7 +131,7 @@ a spurious warning costs a second glance, a missed one costs a wrong answer.
 | engine | index | transport | notes |
 |---|---|---|---|
 | `brave` | Brave | Chromium | best general quality; rate limits after sustained use |
-| `startpage` | Google | Chromium | Google's index without Google's IP ban |
+| `startpage` | Google | Chromium | Google's index without querying Google directly |
 | `marginalia` | independent | plain HTTP | no browser needed; favours small non-commercial sites |
 
 The three use different networks and different quotas, so one being rate
@@ -115,17 +145,35 @@ limited says nothing about the next.
 silently swapped for something else.
 
 `pypi` resolves an exact package name only — PyPI removed its full-text search
-API, and scout says so rather than returning nothing.
+API, and sought says so rather than returning nothing.
+
+## Terms of use
+
+`sought` drives the Brave and Startpage result pages through a real browser.
+Both services' terms restrict automated querying of their result pages; Brave
+offers an official Search API for programmatic access, which is the supported
+route for anything beyond occasional interactive use. Marginalia is an
+independent search engine and publishes an API of its own. The vertical sources
+are documented public APIs. You are responsible for your own compliance with
+whichever services you enable.
+
+Worth stating plainly, because it is a design decision and not an oversight:
+when sought hits a bot wall it does not try to get past it. The markers in
+`BOT_WALL_MARKERS` (`src/sought/browser.py`) turn the wall into a
+`rate_limited` attempt in the audit trail and the chain falls through to the
+next engine. There is no retry loop, no fingerprint spoofing, and no CAPTCHA
+solving. A refusal is a result like any other, and recording it is more useful
+than defeating it.
 
 ## Configuration
 
-`~/.config/scout/config.toml`. Precedence: **CLI flags > config file >
+`~/.config/sought/config.toml`. Precedence: **CLI flags > config file >
 environment > builtin defaults**.
 
 ```bash
-scout config --init     # write an annotated default
-scout config --path     # print the path
-scout config            # print current contents
+sought config --init     # write an annotated default
+sought config --path     # print the path
+sought config            # print current contents
 ```
 
 ```toml
@@ -142,11 +190,16 @@ limit = 10
 
 [tls]
 system_trust = true
-browser_ignore_cert_errors = true
+browser_ignore_cert_errors = false
 ```
 
-The proxy is passed to Playwright explicitly, because Chromium launched by
-Playwright does not read proxy environment variables.
+Setting a proxy here passes it to both transports explicitly. Left empty, each
+transport reads the environment on its own — and the two do not agree when
+`http_proxy` and `HTTP_PROXY` are both set to *different* values: Chromium
+prefers the lowercase name, while Python's `urllib` resolution is
+last-one-wins over the environment's iteration order. Measured, not inferred.
+If your environment sets both cases, set the proxy here instead and the
+ambiguity goes away.
 
 ### A note on the two TLS settings
 
@@ -158,20 +211,26 @@ proxy this is the *correct* fix: the proxy re-signs traffic with a CA your
 machine already trusts and certifi has never heard of. Verification stays fully
 on. Leave this true.
 
-`browser_ignore_cert_errors = true` is a real trade-off. Chromium does not read
-the OS trust store, so behind the same proxy every browser engine dies with
-`ERR_CERT_AUTHORITY_INVALID`, and this flag is what makes them work. It does
-disable certificate verification for the browser, which on an untrusted network
-would expose those requests to interception. Set it to `false` on any network
-you do not control; `brave` and `startpage` will stop working and `doctor` will
-tell you why, leaving `marginalia` and the vertical sources.
+`browser_ignore_cert_errors` is a real trade-off, and it defaults to `false`.
+Chromium does not read the OS trust store, so behind a TLS-inspecting proxy
+every browser engine dies with `ERR_CERT_AUTHORITY_INVALID` — `doctor` will
+report exactly that — leaving `marginalia` and the vertical sources working.
+Setting it to `true` is what makes `brave` and `startpage` work again, at the
+cost of disabling certificate verification for the browser, which on a network
+you do not control would expose those requests to interception. Opt in only
+where you know why the certificates are being re-signed:
+
+```toml
+[tls]
+browser_ignore_cert_errors = true
+```
 
 ## Diagnostics
 
 ```bash
-scout doctor            # full check with live engine probes
-scout doctor --offline  # skip the network probes
-scout doctor --fix      # install a missing chromium
+sought doctor            # full check with live engine probes
+sought doctor --offline  # skip the network probes
+sought doctor --fix      # install a missing chromium
 ```
 
 `doctor` exits non-zero when any required check fails. This is a deliberate
@@ -193,6 +252,10 @@ just check      # lint + test
 
 Or directly: `uv run pytest`, `uv run ruff check .`.
 
-The Claude skill in `skills/scout/` is force-included into the wheel, so
-`uv tool install` alone is enough for `scout install-skill` to work with no
+The Claude skill in `skills/sought/` is force-included into the wheel, so
+`uv tool install` alone is enough for `sought install-skill` to work with no
 checkout present.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

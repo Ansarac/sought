@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from scout.engines.base import GENERAL_ENGINES, VERTICAL_SOURCES, all_source_names
+from sought.engines.base import GENERAL_ENGINES, VERTICAL_SOURCES, all_source_names
 
 __all__ = ["GENERAL_ENGINES", "VERTICAL_SOURCES", "all_source_names"]

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from scout import config as config_mod
-from scout.config import DEFAULT_ORDER, Config, load
-from scout.errors import ConfigError
+from sought import config as config_mod
+from sought.config import DEFAULT_ORDER, Config, load
+from sought.errors import ConfigError
 
 
 def test_absent_file_yields_builtin_defaults(tmp_path):

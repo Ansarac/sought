@@ -1,6 +1,6 @@
 """The fallback chain and its audit invariant.
 
-The property under test throughout: scout never reports zero results without
+The property under test throughout: sought never reports zero results without
 an `attempts` list explaining why.
 """
 
@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from scout import search as search_mod
-from scout.config import Config
-from scout.engines.base import EngineFailure, Result
-from scout.errors import UsageError
+from sought import search as search_mod
+from sought.config import Config
+from sought.engines.base import EngineFailure, Result
+from sought.errors import UsageError
 
 
 @pytest.fixture
@@ -165,6 +165,98 @@ def test_a_missing_browser_is_recorded_and_the_http_engine_still_runs(monkeypatc
     assert out["engine"] == "marginalia"
     assert [a["engine"] for a in out["attempts"]] == ["brave", "startpage", "marginalia"]
     assert out["attempts"][0] == {"engine": "brave", "status": "error", "detail": "skipped: no browser session"}
+
+
+def test_an_engine_returning_nothing_is_recorded_as_empty_not_ok(engines):
+    """Zero results is not a success, and `_finish` credits the first `ok`.
+
+    An engine that returns `[]` without raising used to get `ok` with a count
+    of zero, and the envelope then put its name on whichever engine actually
+    produced the results — "3 results via brave" over startpage's output.
+    """
+    _calls, behaviour = engines
+    behaviour["brave"] = []
+    behaviour["startpage"] = [Result("real", "https://example.com", "")]
+
+    out = search_mod.run("q", config=_cfg())
+
+    assert out["engine"] == "startpage"
+    assert out["attempts"][0]["status"] == "empty"
+    assert "count" not in out["attempts"][0]
+
+
+def test_a_silently_empty_engine_never_becomes_the_credited_winner(engines):
+    _calls, behaviour = engines
+    for name in ("brave", "startpage", "marginalia"):
+        behaviour[name] = []
+
+    out = search_mod.run("q", config=_cfg())
+
+    assert out["engine"] is None
+    assert [a["status"] for a in out["attempts"]] == ["empty", "empty", "empty"]
+
+
+def test_a_browser_that_explodes_does_not_abort_the_chain(monkeypatch):
+    """The worst of the lot.
+
+    `browser_session` raising anything but EngineFailure escaped the chain
+    before a single Attempt was recorded, so the audit trail was empty and
+    Python's default exit code of 1 said "searched fine, found nothing".
+    Marginalia never got its turn.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def exploding(_config):
+        msg = "greenlet is not the current one"
+        raise RuntimeError(msg)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(search_mod, "browser_session", exploding)
+    monkeypatch.setattr(
+        search_mod,
+        "_GENERAL",
+        {
+            "brave": lambda *a, **k: pytest.fail("brave must not run without a browser"),  # noqa: ARG005
+            "startpage": lambda *a, **k: pytest.fail("startpage must not run"),  # noqa: ARG005
+            "marginalia": lambda q, *, config, browser=None: [Result("ok", "https://example.com", "")],  # noqa: ARG005
+        },
+    )
+
+    out = search_mod.run("q", config=_cfg())
+
+    assert out["engine"] == "marginalia"
+    assert out["attempts"][0] == {
+        "engine": "browser",
+        "status": "error",
+        "detail": "RuntimeError: greenlet is not the current one",
+    }
+    assert out["results"]
+
+
+def test_an_explicitly_named_browser_engine_still_appears_in_the_audit_trail(monkeypatch):
+    """`--source brave` with no Chromium recorded nothing at all for brave.
+
+    The chain path recorded the skip; the single-source path did not, so the
+    one engine the user actually named was the one missing from the record.
+    """
+    monkeypatch.setattr(search_mod, "_GENERAL", {"brave": lambda *a, **k: pytest.fail("must not run")})  # noqa: ARG005
+    monkeypatch.setattr(search_mod, "_browser_or_none", lambda stack, config, *, needed, attempts: None)  # noqa: ARG005
+
+    out = search_mod.run("q", config=_cfg(), source="brave")
+
+    assert out["results"] == []
+    assert out["attempts"] == [{"engine": "brave", "status": "error", "detail": "skipped: no browser session"}]
+
+
+def test_both_paths_word_a_missing_browser_the_same_way(monkeypatch):
+    monkeypatch.setattr(search_mod, "_GENERAL", {n: lambda *a, **k: [] for n in ("brave", "marginalia")})  # noqa: ARG005
+    monkeypatch.setattr(search_mod, "_browser_or_none", lambda stack, config, *, needed, attempts: None)  # noqa: ARG005
+
+    chained = search_mod.run("q", config=_cfg(order=("brave", "marginalia")))
+    single = search_mod.run("q", config=_cfg(), source="brave")
+
+    assert chained["attempts"][0] == single["attempts"][0]
 
 
 def test_the_config_reaches_the_engine(engines):

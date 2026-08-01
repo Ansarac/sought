@@ -12,11 +12,17 @@ import html
 import re
 from typing import TYPE_CHECKING
 
-from scout.engines.base import EngineFailure, Result
-from scout.net import session
+# The marker list lives with the browser engines because that is where the bot
+# wall was first met, but the failure is not browser-specific: marginalia is the
+# one general engine that runs without Chromium, so it is also the one most
+# likely to be the thing a corporate proxy interstitial answers. Importing keeps
+# a single list; copying it would leave this side to rot.
+from sought.browser import classify_dead_page
+from sought.engines.base import EngineFailure, Result
+from sought.net import session
 
 if TYPE_CHECKING:
-    from scout.config import Config
+    from sought.config import Config
 
 NAME = "marginalia"
 ENDPOINT = "https://old-search.marginalia.nu/search"
@@ -50,7 +56,10 @@ def search(query: str, *, config: Config, browser: object | None = None) -> list
 
     results = parse(resp.text)[: config.limit]
     if not results:
-        raise EngineFailure("empty", "no search-result cards in the response")
+        # Not necessarily empty. The status line cannot tell an honest "nothing
+        # matched" from a proxy interstitial or an "Access Denied" page, both of
+        # which arrive as HTTP 200 and parse to zero cards.
+        raise classify_dead_page(resp.text, empty_detail="no search-result cards in the response")
     return results
 
 

@@ -1,6 +1,6 @@
 """The fallback chain: try engines in order, record every attempt.
 
-The invariant this module exists to hold: scout never returns an empty result
+The invariant this module exists to hold: sought never returns an empty result
 set without an `attempts` list explaining what it asked and what came back.
 """
 
@@ -9,9 +9,9 @@ from __future__ import annotations
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
-from scout.browser import browser_session
-from scout.engines import brave, marginalia, startpage, verticals
-from scout.engines.base import (
+from sought.browser import browser_session
+from sought.engines import brave, marginalia, startpage, verticals
+from sought.engines.base import (
     BROWSER_ENGINES,
     GENERAL_ENGINES,
     VERTICAL_SOURCES,
@@ -20,18 +20,22 @@ from scout.engines.base import (
     Result,
     detect_low_relevance,
 )
-from scout.errors import UsageError
-from scout.output import envelope
+from sought.errors import UsageError
+from sought.output import envelope
 
 if TYPE_CHECKING:
-    from scout.browser import Browser
-    from scout.config import Config
+    from sought.browser import Browser
+    from sought.config import Config
 
 _GENERAL = {
     "brave": brave.search,
     "startpage": startpage.search,
     "marginalia": marginalia.search,
 }
+
+# One spelling, used by both the chain and the single-source path. The engine
+# the user named must appear in the audit trail whichever path asked for it.
+_NO_BROWSER = "skipped: no browser session"
 
 
 def run(query: str, *, config: Config, source: str | None = None) -> dict[str, Any]:
@@ -54,6 +58,7 @@ def _single(query: str, *, config: Config, source: str) -> dict[str, Any]:
         with ExitStack() as stack:
             browser = _browser_or_none(stack, config, needed=source in BROWSER_ENGINES, attempts=attempts)
             if browser is None and source in BROWSER_ENGINES:
+                attempts.append(Attempt(source, "error", _NO_BROWSER))
                 results = []
             else:
                 results = _attempt(attempts, source, lambda: _GENERAL[source](query, config=config, browser=browser))
@@ -77,7 +82,7 @@ def _chain(query: str, *, config: Config) -> dict[str, Any]:
 
         for name in order:
             if browser is None and name in BROWSER_ENGINES:
-                attempts.append(Attempt(name, "error", "skipped: no browser session"))
+                attempts.append(Attempt(name, "error", _NO_BROWSER))
                 continue
             results = _attempt(attempts, name, lambda n=name: _GENERAL[n](query, config=config, browser=browser))
             if results:
@@ -98,11 +103,27 @@ def _browser_or_none(stack: ExitStack, config: Config, *, needed: bool, attempts
         return stack.enter_context(browser_session(config))
     except EngineFailure as exc:
         attempts.append(Attempt("browser", exc.status, exc.detail))
-        return None
+    except Exception as exc:  # noqa: BLE001 — belt and braces; see below
+        # browser_session already converts everything it can into an
+        # EngineFailure. This second net exists because the cost of a miss is
+        # out of all proportion to the cost of the net: an exception escaping
+        # here aborts the chain with *zero* attempts recorded, which is both
+        # the one output sought promises never to produce and — via Python's
+        # default exit code of 1 — a silent claim that the web had no answer.
+        attempts.append(Attempt("browser", "error", f"{exc.__class__.__name__}: {exc}"))
+    return None
 
 
 def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # noqa: ANN401 — zero-arg callable
-    """Run one engine and append its outcome to the audit trail."""
+    """Run one engine and append its outcome to the audit trail.
+
+    An engine that returns nothing is recorded as `empty`, never as `ok` with a
+    count of zero. `_finish` credits the first `ok` attempt, so a zero-result
+    `ok` would put one engine's name on another engine's results — "12 results
+    via brave" under startpage's output. Every engine happens to raise
+    EngineFailure("empty") today, but that was a convention repeated in four
+    places; this makes it a property of the chain instead.
+    """
     try:
         results = call()
     except EngineFailure as exc:
@@ -110,6 +131,10 @@ def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # 
         return []
     except Exception as exc:  # noqa: BLE001 — one broken engine must not sink the chain
         attempts.append(Attempt(name, "error", f"{exc.__class__.__name__}: {exc}"))
+        return []
+
+    if not results:
+        attempts.append(Attempt(name, "empty", "returned no results"))
         return []
 
     attempts.append(Attempt(name, "ok", count=len(results)))

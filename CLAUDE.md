@@ -4,14 +4,18 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-`scout` is a search CLI built because the built-in `WebSearch` tool is blocked
-on the target machine by a GCP organization policy
-(`constraints/vertexai.allowedPartnerModelFeatures`), which applies to every
-Claude partner model — switching models does not help.
+`sought` is a general-purpose web search CLI. Its distinguishing property is
+not coverage — it is that every search carries an explicit audit trail of the
+engines consulted and what each one did. That is useful anywhere, and it is
+what makes the tool safe to put behind an agent.
+
+It is also the fallback when the built-in `WebSearch` tool is unavailable:
+some environments disable it by platform policy, and because the policy applies
+at the platform level, switching models does not help.
 
 ## The invariant
 
-**Scout must never return an empty or wrong result set without saying why.**
+**Sought must never return an empty or wrong result set without saying why.**
 
 Every change should be checked against that sentence. Concretely:
 
@@ -24,9 +28,11 @@ Every change should be checked against that sentence. Concretely:
 - `detect_low_relevance` is biased toward false positives on purpose. Do not
   "fix" that.
 
-## Non-obvious constraints, all measured on the target network
+## Non-obvious constraints, all measured
 
-These are the reasons behind code that otherwise looks paranoid.
+These are observations from running the tool against real networks, including
+ones with a TLS-inspecting proxy and a shared NAT egress IP. They are the
+reasons behind code that otherwise looks paranoid. None of them are hypotheses.
 
 **Do not add an HTTP-only path for `brave` or `startpage`.** Plain HTTP gets
 429 from Brave at the same moment Playwright succeeds on the identical URL.
@@ -37,33 +43,41 @@ does not have.
 unrelated results rather than an error. This is what `low_relevance` exists to
 catch, and it is not worth inviting in.
 
-**Do not add Google directly, or DuckDuckGo, or Reddit.** The corporate NAT
-egress IP is banned network-wide by Google (`/sorry/index`); DuckDuckGo and
-Reddit are blocked at the network layer. Startpage reaches the Google index
-from its own infrastructure and does work.
+**Do not add Google directly, or DuckDuckGo, or Reddit.** A shared NAT egress
+IP can be banned network-wide by Google (`/sorry/index`), and DuckDuckGo and
+Reddit are commonly blocked at the network layer. Startpage reaches the Google
+index from its own infrastructure and does work.
 
 **Do not replace `truststore` with `verify=False`.** They treat the same
 symptom and are not equivalent: `truststore` verifies against the OS trust
-store, which is where the corporate proxy CA lives. Verification stays on.
+store, which is where a locally installed proxy CA lives. Verification stays
+on.
 
 **`browser_ignore_cert_errors` is different** — it genuinely disables
 verification, for the browser only, and only because Chromium does not read
-the OS trust store. Keep it configurable and keep the trade-off documented
-where a user will see it.
+the OS trust store. It defaults to `false`; behind a TLS-inspecting proxy the
+user opts in. Keep it configurable and keep the trade-off documented where a
+user will see it.
 
 **Use the Playwright Python bindings, not `playwright-cli`.** The CLI is a
 stateful interactive driver (`open` / `goto` / `click e15` / `snapshot`) built
 for step-by-step agent use. Scripted scraping through it pays a process
 round-trip per step.
 
+**A detected bot wall is a status, not an obstacle to route around.**
+`BOT_WALL_MARKERS` in `browser.py` turns the wall into a `rate_limited`
+attempt and the chain moves to the next engine. Do not add retry loops,
+fingerprint spoofing, or CAPTCHA solving — the audit trail is the product, and
+recording the refusal is the correct behaviour.
+
 ## Layout
 
 ```
-src/scout/
+src/sought/
   cli.py         argument parsing, subcommand dispatch, exit codes
   search.py      the fallback chain — where the audit invariant lives
   browser.py     Playwright lifecycle; one Chromium for the whole chain
-  config.py      ~/.config/scout/config.toml
+  config.py      ~/.config/sought/config.toml
   doctor.py      self-check; required failure ⇒ non-zero exit
   net.py         requests session with truststore + proxy
   skill.py       dual-branch skill lookup
@@ -74,17 +88,17 @@ src/scout/
     brave.py  startpage.py     browser engines
     marginalia.py              plain HTTP
     verticals.py               seven keyless APIs
-skills/scout/SKILL.md          force-included into the wheel
+skills/sought/SKILL.md         force-included into the wheel
 ```
 
 ## Conventions
 
-Borrowed from `capital-stack`, which established the "uv tool + bundled skill"
-pattern this repo copies:
+The "uv tool + bundled skill" packaging pattern is the load-bearing one; the
+rest is ordinary:
 
 - Python 3.13, src layout, hatchling.
 - ruff with `extend-select = ["ALL"]`, line length 120.
-- `run()` converts `ScoutError` to an exit code and lets real bugs keep their
+- `run()` converts `SoughtError` to an exit code and lets real bugs keep their
   traceback. Do not widen that catch.
 - The skill ships inside the wheel via `[tool.hatch.build.targets.wheel.force-include]`,
   so `uv tool install` alone suffices. `locate_skill` has a source branch and a
@@ -98,5 +112,5 @@ a fixture rather than a live call when adding an engine.
 
 ```bash
 just check      # ruff + pytest
-uv run scout doctor --offline
+uv run sought doctor --offline
 ```

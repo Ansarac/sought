@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from scout import cli
-from scout.config import Config
-from scout.errors import ScoutError
+from sought import cli
+from sought.config import Config
+from sought.errors import SoughtError
 
 
 @pytest.fixture
@@ -21,9 +21,9 @@ def fake_search(monkeypatch):
         "low_relevance": False,
         "results": [{"title": "T", "url": "https://example.com", "snippet": "S"}],
     }
-    import scout.search
+    import sought.search
 
-    monkeypatch.setattr(scout.search, "run", lambda *a, **k: payload)  # noqa: ARG005
+    monkeypatch.setattr(sought.search, "run", lambda *a, **k: payload)  # noqa: ARG005
     monkeypatch.setattr(cli, "_load_config", lambda **k: Config())  # noqa: ARG005
     return payload
 
@@ -67,13 +67,13 @@ def test_a_bare_invocation_prints_help(capsys):
     assert "usage" in capsys.readouterr().out.lower()
 
 
-def test_scout_errors_become_exit_codes_not_tracebacks(monkeypatch, capsys):
-    class BoomError(ScoutError):
+def test_sought_errors_become_exit_codes_not_tracebacks(monkeypatch, capsys):
+    class BoomError(SoughtError):
         exit_code = 2
 
     monkeypatch.setattr(cli, "_dispatch", lambda _argv: (_ for _ in ()).throw(BoomError("kaboom")))
     assert cli.main(["x"]) == 2
-    assert "scout: kaboom" in capsys.readouterr().err
+    assert "sought: kaboom" in capsys.readouterr().err
 
 
 def test_interrupt_exits_130(monkeypatch, capsys):
@@ -90,19 +90,63 @@ def test_unexpected_exceptions_keep_their_traceback(monkeypatch):
 
 
 def test_cli_flags_override_the_config_file(monkeypatch):
-    import scout.config
+    import sought.config
 
-    monkeypatch.setattr(scout.config, "load", lambda *a, **k: Config(limit=10, timeout_seconds=30))  # noqa: ARG005
+    monkeypatch.setattr(sought.config, "load", lambda *a, **k: Config(limit=10, timeout_seconds=30))  # noqa: ARG005
     cfg = cli._load_config(limit=2, timeout=7)  # noqa: SLF001
     assert (cfg.limit, cfg.timeout_seconds) == (2, 7)
 
 
 def test_omitted_flags_leave_the_config_alone(monkeypatch):
-    import scout.config
+    import sought.config
 
-    monkeypatch.setattr(scout.config, "load", lambda *a, **k: Config(limit=10, timeout_seconds=30))  # noqa: ARG005
+    monkeypatch.setattr(sought.config, "load", lambda *a, **k: Config(limit=10, timeout_seconds=30))  # noqa: ARG005
     cfg = cli._load_config()  # noqa: SLF001
     assert (cfg.limit, cfg.timeout_seconds) == (10, 30)
+
+
+@pytest.mark.parametrize(("flag", "value"), [("--limit", 0), ("--limit", -5), ("--timeout", 0), ("--timeout", -3)])
+def test_nonpositive_cli_overrides_are_a_usage_error(monkeypatch, capsys, flag, value):
+    """These used to be written straight into the frozen Config and fail far away.
+
+    `--limit 0` slices every engine to nothing and is reported as `empty` — a
+    false statement about the web. `--timeout 0` means "no timeout" to
+    Playwright and hangs. `--timeout -3` leaks a Node.js warning.
+    """
+    import sought.config
+    import sought.search
+
+    monkeypatch.setattr(sought.config, "load", lambda *a, **k: Config())  # noqa: ARG005
+    monkeypatch.setattr(sought.search, "run", lambda *a, **k: pytest.fail("must not search"))  # noqa: ARG005
+
+    assert cli.main(["hello", flag, str(value)]) == 2
+    err = capsys.readouterr().err
+    assert flag in err
+    assert "positive integer" in err
+    assert str(value) in err
+
+
+def test_a_positive_override_still_gets_through(monkeypatch):
+    import sought.config
+
+    monkeypatch.setattr(sought.config, "load", lambda *a, **k: Config(limit=10, timeout_seconds=30))  # noqa: ARG005
+    cfg = cli._load_config(limit=1, timeout=1)  # noqa: SLF001
+    assert (cfg.limit, cfg.timeout_seconds) == (1, 1)
+
+
+def test_an_empty_audit_trail_is_a_bug_and_says_so(fake_search, capsys):
+    """A state CLAUDE.md calls a bug rather than an outcome.
+
+    `all()` over an empty list is True, so this used to exit 1 — "the sources
+    worked and the web had nothing" — with nothing backing the claim up.
+    """
+    fake_search["results"] = []
+    fake_search["attempts"] = []
+
+    assert cli.main(["hello"]) == 2
+    err = capsys.readouterr().err
+    assert "bug" in err
+    assert "no results" not in err
 
 
 def test_an_unknown_source_is_rejected_before_any_network_call(capsys):
@@ -119,10 +163,43 @@ def test_install_skill_print_writes_the_skill_to_stdout(capsys):
 
 def test_install_skill_writes_into_dest(tmp_path, capsys):
     assert cli.main(["install-skill", "--dest", str(tmp_path)]) == 0
-    assert (tmp_path / "scout" / "SKILL.md").is_file()
+    assert (tmp_path / "sought" / "SKILL.md").is_file()
     assert "installed" in capsys.readouterr().out
 
 
 def test_config_path_prints_the_path(capsys):
     assert cli.main(["config", "--path"]) == 0
     assert "config.toml" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("name", cli.SUBCOMMANDS)
+def test_every_subcommand_is_documented_in_the_help(name, capsys):
+    # A subcommand absent from --help is a subcommand nobody finds.
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert f"sought {name}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("argv", "is_subcommand"),
+    [
+        (["doctor"], True),
+        (["doctor", "--offline"], True),
+        (["config", "--init"], True),
+        (["install-skill", "--print"], True),
+        # A flag that takes a value must not look like search terms.
+        (["install-skill", "--dest", "somewhere"], True),
+        # Every subcommand name is also an ordinary word; quoting reaches search.
+        (["doctor who"], False),
+        ([], False),
+        (["brave", "--pretty"], False),
+    ],
+)
+def test_subcommand_dispatch_matches_on_the_leading_word(argv, is_subcommand):
+    assert cli._names_subcommand(argv) is is_subcommand  # noqa: SLF001
+
+
+def test_a_quoted_query_starting_with_a_subcommand_word_reaches_search(fake_search, capsys):
+    # The search path emits the JSON envelope; `doctor` emits a check report.
+    assert cli.main(["doctor who"]) == 0
+    assert "attempts" in json.loads(capsys.readouterr().out)

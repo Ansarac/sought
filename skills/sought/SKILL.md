@@ -1,11 +1,11 @@
 ---
-name: scout
-description: Search the web when the built-in WebSearch tool is unavailable or blocked. Use for finding documentation, comparing libraries, researching error messages, checking community discussion, or looking up packages, repos and news. Also use whenever a search must not silently return wrong results.
+name: sought
+description: Search the web with an explicit audit trail, and as a fallback when the built-in WebSearch tool is unavailable or blocked. Use for finding documentation, comparing libraries, researching error messages, checking community discussion, or looking up packages, repos and news. Also use whenever a search must not silently return wrong results.
 ---
 
-# scout
+# sought
 
-`scout` is a search CLI that degrades across independent engines and reports
+`sought` is a search CLI that degrades across independent engines and reports
 exactly what it tried. Use it whenever you need to *discover* URLs. Once you
 have a URL, fetch it normally.
 
@@ -25,9 +25,9 @@ only search result pages that lie.
 ## Basic use
 
 ```bash
-scout "playwright bypass cloudflare 2025"        # JSON, for reading programmatically
-scout "rust async runtime comparison" --pretty   # table, for showing a human
-scout "..." --limit 5
+sought "playwright bypass cloudflare 2025"        # JSON, for reading programmatically
+sought "rust async runtime comparison" --pretty   # table, for showing a human
+sought "..." --limit 5
 ```
 
 JSON is the default because the envelope matters:
@@ -63,7 +63,7 @@ it tells you *why* there is nothing. Statuses:
 | `ok` | answered | — |
 | `empty` | answered, matched nothing | reword the query |
 | `rate_limited` | quota or bot wall | it fell through to the next engine; fine |
-| `blocked` | network or engine refused | check `scout doctor` |
+| `blocked` | network or engine refused | check `sought doctor` |
 | `timeout` | no response in time | retry, or raise `--timeout` |
 | `error` | unexpected failure | read `detail` |
 
@@ -79,7 +79,7 @@ rather than concluding the web has no answer.
 
 ## Choosing a source
 
-Without `--source`, scout runs the general chain: **brave → startpage →
+Without `--source`, sought runs the general chain: **brave → startpage →
 marginalia**. Three independent networks and quotas, so one being rate limited
 says nothing about the next. Take this default for open-ended questions.
 
@@ -113,9 +113,9 @@ Searching is discovery; fetching is reading. Keep them separate.
 ## When something is wrong
 
 ```bash
-scout doctor            # full check, including live engine probes
-scout doctor --offline  # skip the network probes
-scout doctor --fix      # install a missing chromium
+sought doctor            # full check, including live engine probes
+sought doctor --offline  # skip the network probes
+sought doctor --fix      # install a missing chromium
 ```
 
 `doctor` exits non-zero if any required check fails, so its summary line can be
@@ -123,4 +123,4 @@ trusted. Individual engines being down is a warning, not a failure — that is
 what the chain is for. Only "every configured engine failed" is fatal.
 
 Configuration (proxy, engine order, timeouts, TLS) lives at
-`~/.config/scout/config.toml`; `scout config --init` writes an annotated one.
+`~/.config/sought/config.toml`; `sought config --init` writes an annotated one.

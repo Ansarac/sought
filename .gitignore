@@ -10,3 +10,12 @@ build/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Local machine config and secrets
+.claude/settings.local.json
+.env
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

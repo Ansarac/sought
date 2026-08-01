@@ -1,0 +1,30 @@
+<!doctype html>
+<!--
+  A trimmed Marginalia results page: two well-formed cards and one malformed
+  one. Saved rather than fetched so the parser can be tested with no network.
+-->
+<html lang="en">
+<head><title>Marginalia Search - unix philosophy</title></head>
+<body>
+<div class="results">
+
+<section class="card search-result">
+  <div class="url"><a href="https://example.com/unix?a=1&amp;b=2">example.com</a></div>
+  <a class="title" href="https://example.com/unix"><b>Unix</b> philosophy</a>
+  <p class="description">Do one thing &amp; do it well.</p>
+</section>
+
+<section class="card search-result">
+  <div class="url"><a href="https://second.example/page">second.example</a></div>
+  <a class="title" href="https://second.example/page">Second
+  result</a>
+  <p class="description">Write programs to work together.</p>
+</section>
+
+<section class="card search-result">
+  <p class="description">malformed card with no url or title</p>
+</section>
+
+</div>
+</body>
+</html>

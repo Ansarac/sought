@@ -10,10 +10,10 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from scout.errors import ScoutError
+from sought.errors import SoughtError
 
-PKG = "scout"
-NAME = "scout"
+PKG = "sought"
+NAME = "sought"
 DEFAULT_SKILL_ROOT = Path.home() / ".claude" / "skills"
 
 
@@ -34,7 +34,7 @@ def locate_skill(*, pkg: str = PKG, name: str = NAME, anchor: Path | None = None
         return source, "source"
 
     msg = f"cannot find SKILL.md for {name} (checked package data and the source checkout)"
-    raise ScoutError(msg)
+    raise SoughtError(msg)
 
 
 def _packaged(pkg: str) -> Path | None:
@@ -53,7 +53,7 @@ def _packaged(pkg: str) -> Path | None:
 
 
 def _from_source(name: str, anchor: Path) -> Path | None:
-    """Find SKILL.md in the checkout: src/scout/skill.py -> repo/skills/<name>/."""
+    """Find SKILL.md in the checkout: src/sought/skill.py -> repo/skills/<name>/."""
     candidate = anchor.resolve().parents[2] / "skills" / name / "SKILL.md"
     return candidate if candidate.is_file() else None
 
@@ -65,7 +65,7 @@ def install_skill(*, dest_root: Path = DEFAULT_SKILL_ROOT, force: bool = False, 
 
     if dest.exists() and not force:
         msg = f"{dest} already exists; pass --force to overwrite"
-        raise ScoutError(msg)
+        raise SoughtError(msg)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, dest)
