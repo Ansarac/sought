@@ -68,6 +68,14 @@ after `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n proxy-ca -i <root>.crt`,
 Import the root of the chain, not the intermediate. `doctor` recommends this
 route first and the flag only as a fallback; keep that ordering.
 
+**Always hand Chromium its proxy explicitly, even one inherited from the
+environment.** Chromium on Linux reads `HTTPS_PROXY` only outside a desktop
+session; under GNOME it takes gsettings instead. Measured on a GNOME machine
+with gsettings on `auto`, no PAC URL and a Kerberos firewall on direct egress:
+`requests` used the env proxy and succeeded, Chromium went direct and got
+HTTP 401 on roughly half its navigations (`blocked — HTTP 401` from both
+browser engines). `net.environment_proxy` closes that gap.
+
 **Use the Playwright Python bindings, not `playwright-cli`.** The CLI is a
 stateful interactive driver (`open` / `goto` / `click e15` / `snapshot`) built
 for step-by-step agent use. Scripted scraping through it pays a process

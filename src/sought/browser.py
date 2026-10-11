@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
 from sought.engines.base import EngineFailure
-from sought.net import DEFAULT_UA, proxy_bypass_list
+from sought.net import DEFAULT_UA, environment_proxy, proxy_bypass_list
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -124,14 +124,12 @@ def _launch_kwargs(config: Config) -> dict[str, Any]:
         launch_args.append("--ignore-certificate-errors")
 
     kwargs: dict[str, Any] = {"headless": True, "args": launch_args}
-    proxy_server = config.proxy.browser_server()
+    proxy_server = config.proxy.browser_server() or environment_proxy()
     if proxy_server:
-        # Chromium does read the proxy environment, so this is not about giving
-        # it a proxy it would otherwise lack. It is about the two transports
-        # disagreeing when `http_proxy` and `HTTP_PROXY` hold different values:
-        # Chromium prefers the lowercase one, requests effectively takes
-        # whichever `os.environ` yields last. Passing it explicitly makes the
-        # config file authoritative for both.
+        # Always explicit, even when the proxy only comes from the environment:
+        # Chromium does not reliably read the environment (see
+        # `environment_proxy`), and `requests` does. Passing it here makes both
+        # transports take the same route, with the config file authoritative.
         proxy: dict[str, str] = {"server": proxy_server}
         bypass = proxy_bypass_list(config)
         if bypass:

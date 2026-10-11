@@ -203,8 +203,8 @@ def test_an_exception_from_the_body_is_not_swallowed(playwright):
 def test_the_proxy_and_its_bypass_list_are_handed_to_chromium(playwright, monkeypatch):
     """The bypass list has to travel with the proxy.
 
-    Chromium does read the proxy environment, but `--proxy-server` supersedes
-    it wholesale, NO_PROXY included.
+    `--proxy-server` supersedes the proxy environment wholesale, NO_PROXY
+    included.
     """
     monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.delenv("NO_PROXY", raising=False)
@@ -220,13 +220,49 @@ def test_the_proxy_and_its_bypass_list_are_handed_to_chromium(playwright, monkey
     }
 
 
-def test_no_proxy_configured_means_no_proxy_argument(playwright):
+_PROXY_VARS = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")
+
+
+@pytest.fixture
+def clean_proxy_env(monkeypatch):
+    for var in _PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    return monkeypatch
+
+
+def test_no_proxy_anywhere_means_no_proxy_argument(playwright, clean_proxy_env):
     pw, _b, _c = playwright()
 
     with browser_mod.browser_session(Config()):
         pass
 
     assert "proxy" not in pw.chromium.launch_kwargs
+
+
+def test_an_environment_proxy_is_handed_to_chromium_explicitly(playwright, clean_proxy_env):
+    """Chromium under a GNOME session ignores HTTPS_PROXY and goes direct.
+
+    Measured behind a Kerberos firewall: requests used the proxy, Chromium did
+    not, and about half its navigations came back HTTP 401.
+    """
+    clean_proxy_env.setenv("HTTPS_PROXY", "http://env-proxy.example:3128")
+    clean_proxy_env.setenv("NO_PROXY", "localhost")
+    pw, _b, _c = playwright()
+
+    with browser_mod.browser_session(Config()):
+        pass
+
+    assert pw.chromium.launch_kwargs["proxy"] == {"server": "http://env-proxy.example:3128", "bypass": "localhost"}
+
+
+def test_the_config_proxy_beats_the_environment_one(playwright, clean_proxy_env):
+    clean_proxy_env.setenv("HTTPS_PROXY", "http://env-proxy.example:3128")
+    pw, _b, _c = playwright()
+
+    with browser_mod.browser_session(Config(proxy=ProxyConfig(https="http://cfg-proxy.example:8080"))):
+        pass
+
+    assert pw.chromium.launch_kwargs["proxy"]["server"] == "http://cfg-proxy.example:8080"
 
 
 def test_ignore_cert_errors_reaches_both_the_launch_flags_and_the_context(playwright):

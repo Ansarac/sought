@@ -52,6 +52,25 @@ def proxy_bypass_list(config: Config) -> str:
     return config.proxy.no_proxy_value() or os.environ.get("no_proxy") or os.environ.get("NO_PROXY") or ""
 
 
+def environment_proxy() -> str | None:
+    """Return the proxy the environment names, for a browser that will not look for itself.
+
+    Chromium on Linux reads `HTTPS_PROXY` only outside a desktop session. Under
+    GNOME or KDE it takes the desktop's own proxy settings instead and ignores
+    the environment entirely — measured: with gsettings on `auto` and no PAC
+    URL, Chromium went direct while `requests` used the proxy, and a firewall
+    answered roughly half its requests with HTTP 401. The two transports must
+    not disagree about the route, so the browser gets told.
+
+    `getproxies_environment` is what requests itself consults, and it lets
+    lowercase names win over uppercase, which is also Chromium's rule.
+    """
+    from urllib.request import getproxies_environment
+
+    proxies = getproxies_environment()
+    return proxies.get("https") or proxies.get("http") or None
+
+
 @cache
 def _no_proxy_session_class() -> type:
     """Build the Session subclass that enforces a bypass list against an explicit proxy.
