@@ -34,6 +34,10 @@ BOT_WALL_MARKERS = (
     # gone, so a wrong `empty` from it is the last word the user gets.
     "queries from bots",
     "wait for a moment",
+    # Startpage's proof-of-work interstitial, served with a 200 and an empty
+    # title. Caught live: until this was listed, it came out as `empty` and
+    # exit 1, "the web has no answer", for a query nobody ever ran.
+    "verifying your request",
 )
 
 

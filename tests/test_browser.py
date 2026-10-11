@@ -343,6 +343,7 @@ def test_a_wedged_page_becomes_a_timeout_not_a_hang():
         ("Please verify you are human before continuing", "rate_limited"),
         ("Access Denied — network security policy", "rate_limited"),
         ("Our systems have detected unusual traffic", "rate_limited"),
+        ("Verifying your request...\n\nCalculating...\nDifficulty: 6, Speed: 316.537kH/s", "rate_limited"),
         ("Nothing found for that query.", "empty"),
     ],
 )
