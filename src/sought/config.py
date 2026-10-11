@@ -104,14 +104,11 @@ class ProxyConfig:
         return ",".join(self.no_proxy)
 
     def browser_server(self) -> str | None:
-        """Return the proxy URL to hand Playwright, or None to leave it alone.
+        """Return the configured proxy URL for Playwright, or None when the config names none.
 
-        Chromium *does* read the proxy environment — measured, both cases. The
-        reason to pass it explicitly anyway is that the two transports resolve
-        a conflict differently: Chromium prefers the lowercase `http_proxy`,
-        while Python's `getproxies_environment()` folds both cases together and
-        is effectively last-one-wins over `os.environ` order. Setting it here
-        removes that ambiguity and makes the config file authoritative.
+        None does not mean "leave Chromium alone": the browser layer then falls
+        back to `sought.net.environment_proxy`, because Chromium under a Linux
+        desktop session ignores the proxy environment.
         """
         return self.https or self.http or None
 
