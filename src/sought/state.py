@@ -14,6 +14,9 @@ Two mechanisms, both kept under `${XDG_CACHE_HOME:-~/.cache}/sought/`:
   the replay is labelled (`cached.age_seconds`) so it is never mistaken for a
   fresh search.
 
+Both are disposable. `sought config --clear-state` (`clear_state`) deletes
+them early, for the user who has fixed whatever caused a refusal.
+
 Everything here is an optimisation. A missing, corrupt or unwritable state
 file must degrade to "no cooldowns, cache miss" and never break a search, so
 every I/O path below swallows its own failures. Concurrent sought processes
@@ -27,8 +30,10 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard
 
@@ -72,21 +77,38 @@ def cache_dir() -> Path:
 # --- cooldowns --------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Cooldown:
+    """One engine sought is leaving alone, and the refusal that started it."""
+
+    engine: str
+    until: float
+    at: float
+    detail: str
+
+    def describe(self) -> str:
+        """`brave until 23:14 (last refusal at 23:04: HTTP 429)` — for a report, not an attempt."""
+        return f"{self.engine} until {_clock(self.until)} (last refusal at {_clock(self.at)}: {self.detail})"
+
+
+def active_cooldowns(*, config: Config) -> list[Cooldown]:
+    """Every engine a search would skip right now, in chain order.
+
+    Empty when cooldowns are disabled: a leftover file is not applied then, so
+    reporting it would describe a skip that will not happen.
+    """
+    if config.cooldown_seconds <= 0:
+        return []
+    return _live_cooldowns()
+
+
 def cooling_down(names: Iterable[str], *, config: Config) -> dict[str, Attempt]:
     """Return a ready-made `rate_limited` attempt for each engine still cooling down.
 
     The state file is read once per search, not once per engine.
     """
-    if config.cooldown_seconds <= 0:
-        return {}
-    entries = _read_cooldowns()
-    now = _now()
-    out: dict[str, Attempt] = {}
-    for name in names:
-        entry = entries.get(name)
-        if name in _COOLED and entry is not None and entry["until"] > now:
-            out[name] = Attempt(name, "rate_limited", _cooldown_detail(entry))
-    return out
+    active = {c.engine: c for c in active_cooldowns(config=config)}
+    return {name: Attempt(name, "rate_limited", _cooldown_detail(active[name])) for name in names if name in active}
 
 
 def note_outcome(attempt: Attempt, *, config: Config) -> None:
@@ -118,10 +140,21 @@ def note_outcome(attempt: Attempt, *, config: Config) -> None:
         _write_json(cache_dir() / COOLDOWN_FILE, live)
 
 
-def _cooldown_detail(entry: dict[str, Any]) -> str:
+def _live_cooldowns() -> list[Cooldown]:
+    """Return the unexpired entries in the cooldown file, whatever the config says."""
+    entries = _read_cooldowns()
+    now = _now()
+    return [
+        Cooldown(name, entry["until"], entry["at"], entry["detail"])
+        for name in GENERAL_ENGINES
+        if name in _COOLED and (entry := entries.get(name)) is not None and entry["until"] > now
+    ]
+
+
+def _cooldown_detail(cooldown: Cooldown) -> str:
     return (
-        f"cooling down until {_clock(entry['until'])}, not asked this time "
-        f"(last refusal at {_clock(entry['at'])}: {entry['detail']})"
+        f"cooling down until {_clock(cooldown.until)}, not asked this time "
+        f"(last refusal at {_clock(cooldown.at)}: {cooldown.detail})"
     )
 
 
@@ -224,6 +257,111 @@ def _prune(directory: Path, *, ttl: int) -> None:
             with contextlib.suppress(OSError):
                 if path.stat().st_mtime < cutoff:
                     path.unlink()
+
+
+# --- clearing ---------------------------------------------------------------
+
+# The exact names sought writes, and nothing else. `_write_json`'s temp files
+# are `.<target name>.<random>.tmp`; a crash between mkstemp and replace can
+# leave one behind.
+_COOLDOWN_NAMES = re.compile(rf"{re.escape(COOLDOWN_FILE)}|\.{re.escape(COOLDOWN_FILE)}\..+\.tmp")
+_RESULT_NAMES = re.compile(r"[0-9a-f]{64}\.json|\.[0-9a-f]{64}\.json\..+\.tmp")
+
+
+@dataclass
+class Cleared:
+    """What `clear_state` removed, and what it could not."""
+
+    directory: Path
+    cooldowns: list[str] = field(default_factory=list)
+    results: int = 0
+    # An expired cooldown file, leftover temp files: removed, but nothing was
+    # being held back by them, so they are not reported as cooldowns.
+    stale: int = 0
+    failed: list[tuple[Path, str]] = field(default_factory=list)
+
+    @property
+    def removed_anything(self) -> bool:
+        """Whether any file was actually deleted."""
+        return bool(self.cooldowns or self.results or self.stale)
+
+
+def clear_state() -> Cleared:
+    """Delete sought's own state files, and only those.
+
+    For the user who has fixed what caused a refusal and should not have to
+    wait out the cooldown, or hand-edit a file to stop waiting.
+
+    Deliberately not `rmtree`. `cache_dir()` comes from an environment
+    variable, so it is matched name by name against what sought writes, in the
+    two directories it writes to. A `results` that is a symlink is not entered,
+    and a symlinked entry is unlinked as a link — its target is never touched.
+    A file that cannot be removed is reported, not raised: the rest still goes.
+    """
+    directory = cache_dir()
+    out = Cleared(directory)
+    live = [c.engine for c in _live_cooldowns()]
+
+    top = _own_files(directory, _COOLDOWN_NAMES, out)
+    if top is None:
+        # Not a directory, or not ours to list: the subdirectory would fail
+        # the same way, and one report of it is enough.
+        return out
+    for path in top:
+        if _remove(path, out):
+            if path.name == COOLDOWN_FILE and live:
+                out.cooldowns = live
+            else:
+                out.stale += 1
+
+    results = directory / RESULTS_DIR
+    if results.is_symlink():
+        out.failed.append((results, "is a symlink; not followed"))
+        return out
+    for path in _own_files(results, _RESULT_NAMES, out) or []:
+        if _remove(path, out):
+            if path.name.endswith(".tmp"):
+                out.stale += 1
+            else:
+                out.results += 1
+    return out
+
+
+def _own_files(directory: Path, names: re.Pattern[str], out: Cleared) -> list[Path] | None:
+    """Files and symlinks in `directory` whose whole name matches, without following any link.
+
+    A missing directory has nothing in it. One that cannot be listed is
+    reported in `out` and returns None, so the caller can tell the two apart.
+    """
+    try:
+        with os.scandir(directory) as it:
+            return [
+                Path(entry.path)
+                for entry in it
+                if names.fullmatch(entry.name) and (entry.is_symlink() or entry.is_file(follow_symlinks=False))
+            ]
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        out.failed.append((directory, _reason(exc)))
+        return None
+
+
+def _remove(path: Path, out: Cleared) -> bool:
+    """Unlink one file; report rather than raise. Already gone counts as nothing removed."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        # A concurrent sought pruned it first. Nothing to report either way.
+        return False
+    except OSError as exc:
+        out.failed.append((path, _reason(exc)))
+        return False
+    return True
+
+
+def _reason(exc: OSError) -> str:
+    return exc.strerror or exc.__class__.__name__
 
 
 # --- file I/O ---------------------------------------------------------------

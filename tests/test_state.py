@@ -491,3 +491,178 @@ def test_expired_entries_are_pruned_on_write(engines, clock, isolated_cache):
     remaining = list((isolated_cache / state.RESULTS_DIR).iterdir())
     assert len(remaining) == 1
     assert remaining[0] != stale
+
+
+# --- reporting cooldowns ----------------------------------------------------
+
+
+def test_active_cooldowns_lists_live_entries_in_chain_order(clock):
+    cfg = Config(cooldown_seconds=600)
+    state.note_outcome(Attempt("marginalia", "rate_limited", "HTTP 429"), config=cfg)
+    state.note_outcome(Attempt("brave", "rate_limited", "bot wall"), config=cfg)
+
+    active = state.active_cooldowns(config=cfg)
+
+    assert [c.engine for c in active] == ["brave", "marginalia"]
+    assert active[0] == state.Cooldown("brave", T0 + 600, T0, "bot wall")
+    assert active[0].describe() == (
+        f"brave until {time.strftime('%H:%M', time.localtime(T0 + 600))} "
+        f"(last refusal at {time.strftime('%H:%M', time.localtime(T0))}: bot wall)"
+    )
+
+
+def test_active_cooldowns_drops_expired_entries(clock):
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config(cooldown_seconds=60))
+    clock(60)
+    assert state.active_cooldowns(config=Config()) == []
+
+
+def test_active_cooldowns_is_empty_when_cooldowns_are_off(clock):
+    """Matches what a search does: a leftover entry is not applied, so it is not reported either."""
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+    assert state.active_cooldowns(config=Config(cooldown_seconds=0)) == []
+
+
+# --- clearing ---------------------------------------------------------------
+
+
+def _cache_one(query="playwright"):
+    key = state.result_key(query, source=None, order=Config().order, limit=Config().limit)
+    state.store_result(key, {"results": [{"title": "x"}], "attempts": [{"engine": "brave"}]}, ttl=900)
+    return key
+
+
+def test_clear_state_removes_cooldowns_cached_results_and_temp_files(clock, isolated_cache):
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+    state.note_outcome(Attempt("marginalia", "rate_limited", "HTTP 429"), config=Config())
+    key = _cache_one("one")
+    _cache_one("two")
+    # What a crash between mkstemp and replace leaves behind.
+    (isolated_cache / ".cooldown.json.abc123.tmp").write_text("{", encoding="utf-8")
+    (isolated_cache / state.RESULTS_DIR / f".{key}.json.xyz.tmp").write_text("{", encoding="utf-8")
+
+    cleared = state.clear_state()
+
+    assert cleared.directory == isolated_cache
+    assert cleared.cooldowns == ["brave", "marginalia"]
+    assert cleared.results == 2
+    assert cleared.stale == 2
+    assert cleared.failed == []
+    assert list(isolated_cache.rglob("*")) == [isolated_cache / state.RESULTS_DIR]
+    assert state.cooling_down(["brave", "marginalia"], config=Config()) == {}
+
+
+def test_an_expired_cooldown_file_is_removed_but_not_called_a_cooldown(clock, isolated_cache):
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config(cooldown_seconds=60))
+    clock(120)
+
+    cleared = state.clear_state()
+
+    assert cleared.cooldowns == []
+    assert cleared.stale == 1
+    assert cleared.removed_anything
+    assert not (isolated_cache / state.COOLDOWN_FILE).exists()
+
+
+def test_clearing_a_missing_dir_is_not_an_error(isolated_cache):
+    assert not isolated_cache.exists()
+    cleared = state.clear_state()
+    assert not cleared.removed_anything
+    assert cleared.failed == []
+    assert not isolated_cache.exists()
+
+
+def test_clearing_an_empty_dir_removes_nothing(isolated_cache):
+    (isolated_cache / state.RESULTS_DIR).mkdir(parents=True)
+    cleared = state.clear_state()
+    assert not cleared.removed_anything
+    assert cleared.failed == []
+
+
+def test_an_unremovable_file_is_reported_and_the_rest_still_goes(clock, isolated_cache, monkeypatch):
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+    _cache_one()
+    stuck = isolated_cache / state.COOLDOWN_FILE
+    real_unlink = type(stuck).unlink
+
+    def unlink(self, *a, **k):
+        if self == stuck:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(type(stuck), "unlink", unlink)
+
+    cleared = state.clear_state()
+
+    assert cleared.failed == [(stuck, "Permission denied")]
+    # Not removed, so not reported as cleared.
+    assert cleared.cooldowns == []
+    assert cleared.results == 1
+    assert stuck.exists()
+
+
+def test_an_unlistable_dir_is_reported_not_raised(isolated_cache, monkeypatch):
+    """XDG_CACHE_HOME/sought being a regular file, say."""
+    isolated_cache.parent.mkdir(parents=True, exist_ok=True)
+    isolated_cache.write_text("not a directory", encoding="utf-8")
+
+    cleared = state.clear_state()
+
+    assert [path for path, _reason in cleared.failed] == [isolated_cache]
+    assert isolated_cache.read_text(encoding="utf-8") == "not a directory"
+
+
+def test_clearing_touches_nothing_sought_did_not_write(clock, isolated_cache, tmp_path):
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+    _cache_one()
+    results = isolated_cache / state.RESULTS_DIR
+    # Neighbours in sought's own dirs whose names sought never writes.
+    foreign = [
+        isolated_cache / "notes.txt",
+        isolated_cache / "cooldown.json.bak",
+        results / "mine.json",
+        results / ("0" * 64 + ".json.bak"),
+    ]
+    for path in foreign:
+        path.write_text("keep", encoding="utf-8")
+    # A directory with a sought-shaped name is not a file sought wrote.
+    (results / ("a" * 64 + ".json")).mkdir()
+    # And a file entirely outside the cache dir.
+    outside = tmp_path / "elsewhere.json"
+    outside.write_text("keep", encoding="utf-8")
+
+    cleared = state.clear_state()
+
+    assert cleared.cooldowns == ["brave"]
+    assert cleared.results == 1
+    assert all(path.read_text(encoding="utf-8") == "keep" for path in [*foreign, outside])
+    assert (results / ("a" * 64 + ".json")).is_dir()
+
+
+def test_a_symlinked_results_dir_is_not_followed(isolated_cache, tmp_path):
+    """Globbing through a symlink would delete files outside the cache dir."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    victim = elsewhere / ("f" * 64 + ".json")
+    victim.write_text("keep", encoding="utf-8")
+    isolated_cache.mkdir(parents=True)
+    (isolated_cache / state.RESULTS_DIR).symlink_to(elsewhere, target_is_directory=True)
+
+    cleared = state.clear_state()
+
+    assert victim.read_text(encoding="utf-8") == "keep"
+    assert cleared.failed == [(isolated_cache / state.RESULTS_DIR, "is a symlink; not followed")]
+    assert (isolated_cache / state.RESULTS_DIR).is_symlink()
+
+
+def test_a_symlinked_state_file_is_unlinked_as_a_link_and_its_target_kept(isolated_cache, tmp_path):
+    target = tmp_path / "precious.json"
+    target.write_text("{}", encoding="utf-8")
+    isolated_cache.mkdir(parents=True)
+    (isolated_cache / state.COOLDOWN_FILE).symlink_to(target)
+
+    cleared = state.clear_state()
+
+    assert cleared.stale == 1
+    assert not (isolated_cache / state.COOLDOWN_FILE).is_symlink()
+    assert target.read_text(encoding="utf-8") == "{}"

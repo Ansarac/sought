@@ -23,7 +23,7 @@ EPILOG = f"""\
 commands:
   sought <query>            search (the default — no subcommand needed)
   sought doctor             check that sought can actually work here
-  sought config             show, create, or locate the config file
+  sought config             show, create, or locate the config file; clear state
   sought install-skill      install the bundled Claude skill
 
   Each takes its own --help. A leading bare `doctor`, `config` or
@@ -40,6 +40,7 @@ examples:
   sought "MCP web search" --source hn
   sought doctor --offline
   sought config --init
+  sought config --clear-state
 """
 
 
@@ -105,7 +106,8 @@ def _search(argv: list[str]) -> int:
         action="store_true",
         help=(
             "ignore a cached result for this exact search and ask the engines again (the new result is still "
-            "cached). Engines cooling down after a rate limit stay skipped: asking them early prolongs the ban"
+            "cached). Engines cooling down after a rate limit stay skipped: asking them early prolongs the ban. "
+            "Once the cause is fixed, `sought config --clear-state` ends the cooldowns"
         ),
     )
     parser.add_argument("--version", action="version", version=f"sought {__version__}")
@@ -158,10 +160,26 @@ def _doctor(argv: list[str]) -> int:
 
 
 def _config(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="sought config", description="Show or create the config file.")
-    parser.add_argument("--init", action="store_true", help="write the annotated default config if absent")
-    parser.add_argument("--path", action="store_true", help="print the config path and exit")
+    parser = argparse.ArgumentParser(
+        prog="sought config", description="Show or create the config file, or clear sought's cached state."
+    )
+    # Exclusive rather than ranked: `--init --clear-state` silently doing one
+    # of the two would be the quiet partial success this tool exists to avoid.
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--init", action="store_true", help="write the annotated default config if absent")
+    action.add_argument("--path", action="store_true", help="print the config path and exit")
+    action.add_argument(
+        "--clear-state",
+        action="store_true",
+        help=(
+            "end every engine cooldown and drop cached results now, e.g. after fixing the network. "
+            "Deletes only sought's own files in its cache directory"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.clear_state:
+        return _clear_state()
 
     if args.path:
         print(config_mod.CONFIG_PATH)
@@ -179,6 +197,35 @@ def _config(argv: list[str]) -> int:
         return 0
     print(path.read_text(encoding="utf-8"), end="")
     return 0
+
+
+def _clear_state() -> int:
+    """Clear cooldowns and the result cache, and say exactly what went.
+
+    Takes no config on purpose: a broken config file must not stand between
+    the user and unblocking their engines. A file that could not be removed
+    exits 2 — a leftover cooldown keeps an engine skipped, and a script that
+    clears and then searches should be able to tell.
+    """
+    from sought import state
+
+    cleared = state.clear_state()
+    if cleared.removed_anything:
+        parts = []
+        if cleared.cooldowns:
+            n = len(cleared.cooldowns)
+            parts.append(f"{n} cooldown{'s' if n > 1 else ''} ({', '.join(cleared.cooldowns)})")
+        if cleared.results:
+            parts.append(f"{cleared.results} cached result{'s' if cleared.results > 1 else ''}")
+        if cleared.stale:
+            parts.append(f"{cleared.stale} stale file{'s' if cleared.stale > 1 else ''}")
+        print(f"cleared: {', '.join(parts)} — {cleared.directory}")
+    elif not cleared.failed:
+        print(f"nothing to clear — {cleared.directory}")
+
+    for path, reason in cleared.failed:
+        print(f"sought: could not remove {path}: {reason}", file=sys.stderr)
+    return 2 if cleared.failed else 0
 
 
 def _install_skill(argv: list[str]) -> int:

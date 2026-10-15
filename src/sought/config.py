@@ -47,6 +47,7 @@ limit = 10
 # again seconds after a refusal does not get an answer; on a shared egress IP
 # it prolongs the ban. Skipped engines still appear in the audit trail, as
 # `rate_limited` with "cooling down ... not asked this time". 0 disables.
+# `sought config --clear-state` ends every cooldown early.
 cooldown_seconds = 600
 
 [cache]

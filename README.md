@@ -121,7 +121,8 @@ Only `rate_limited` starts a cooldown; `blocked` is usually a local fault
 being fixed, and `timeout`, `empty` and `error` are not refusals. An `ok`
 clears it. If every browser engine is cooling down, Chromium is not launched.
 A skip counts as a failure for the exit code, exactly like a live 429.
-`doctor` probes respect cooldowns too.
+`doctor` lists active cooldowns (offline too) and does not probe a cooling
+engine.
 
 **Result cache.** A search that returned results (and was not flagged
 `low_relevance`) is replayed for `cache.ttl_seconds` (default 900) when the
@@ -136,7 +137,10 @@ exists to stop. `doctor` never reads or writes the cache: a replayed probe
 would report an engine as working without having asked it.
 
 State lives in `${XDG_CACHE_HOME:-~/.cache}/sought/` and is disposable; a
-missing or corrupt file just means no cooldowns and a cache miss.
+missing or corrupt file just means no cooldowns and a cache miss. Once you
+have fixed what caused a refusal, `sought config --clear-state` ends every
+cooldown and drops the cache. It deletes only the files sought writes there,
+and says what it removed.
 
 ### `low_relevance`
 
@@ -211,9 +215,10 @@ than defeating it.
 environment > builtin defaults**.
 
 ```bash
-sought config --init     # write an annotated default
-sought config --path     # print the path
-sought config            # print current contents
+sought config --init         # write an annotated default
+sought config --path         # print the path
+sought config                # print current contents
+sought config --clear-state  # end cooldowns, drop cached results
 ```
 
 ```toml
@@ -306,7 +311,10 @@ missing` two lines above — a green summary that means nothing costs more time
 than no summary at all.
 
 Individual engines being down is a *warning*, not a failure; routing around
-that is the chain's whole job. Only "every configured engine failed" is fatal.
+that is the chain's whole job. Only "every configured engine failed" is fatal
+— including when every engine is cooling down, since a search would get
+nothing either; the detail then says nothing was asked and points at
+`sought config --clear-state`.
 
 ## Development
 

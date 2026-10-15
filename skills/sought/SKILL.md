@@ -78,7 +78,9 @@ ban. It still appears in `attempts`, as `rate_limited` with a detail like
 `cooling down until 14:20, not asked this time (last refusal at 14:10: HTTP
 429)` — read that as "not asked", not as a fresh refusal. Retrying sooner will
 not help, and `--fresh` does not override it: use another engine or a vertical
-source.
+source. If the cause has been fixed (the user changed network or proxy),
+`sought config --clear-state` ends the cooldowns; do not run it just to retry
+an engine that refused you.
 
 **`cached`** — `null` for a search that just happened. `{"age_seconds": N}`
 means this exact search (same query, source, order and limit) succeeded N
@@ -136,7 +138,8 @@ sought doctor --fix      # install a missing chromium
 
 `doctor` exits non-zero if any required check fails, so its summary line can be
 trusted. Individual engines being down is a warning, not a failure — that is
-what the chain is for. Only "every configured engine failed" is fatal.
+what the chain is for. Only "every configured engine failed" is fatal. A
+`cooldowns:` line lists engines searches are currently skipping.
 
 Configuration (proxy, engine order, timeouts, cooldown, cache, TLS) lives at
 `~/.config/sought/config.toml`; `sought config --init` writes an annotated one.
