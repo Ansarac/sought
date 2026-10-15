@@ -63,6 +63,7 @@ sought "playwright bypass cloudflare"           # JSON (default)
 sought "rust async runtimes" --pretty           # table
 sought "MCP web search" --source hn             # one vertical source
 sought "playwright" --source npm --limit 5
+sought "playwright bypass cloudflare" --fresh   # skip the result cache for this search
 ```
 
 Output is JSON by default because the envelope carries the audit trail:
@@ -71,6 +72,7 @@ Output is JSON by default because the envelope carries the audit trail:
 {
   "query": "anthropic claude pricing",
   "engine": "startpage",
+  "cached": null,
   "attempts": [
     {"engine": "brave", "status": "rate_limited", "detail": "bot wall: \"verifying you're not a bot\""},
     {"engine": "startpage", "status": "ok", "count": 8}
@@ -97,6 +99,44 @@ list next to an empty `attempts` list is a bug.
 
 `empty` and `rate_limited` are never collapsed into "no results". They call for
 opposite responses: reword the query, versus wait or use another engine.
+
+### Cooldowns and the result cache
+
+Both reduce the load sought itself puts on the engines. Neither removes
+anything from the audit trail.
+
+**Cooldowns.** When `brave`, `startpage` or `marginalia` answers
+`rate_limited`, sought leaves that engine alone for `engines.cooldown_seconds`
+(default 600). Asking again seconds after a refusal does not get an answer —
+on a shared egress IP it prolongs the ban for everyone behind it, and each
+refused browser engine costs a selector timeout besides. A skipped engine is
+still recorded, as `rate_limited` with a detail that says it was not asked:
+
+```json
+{"engine": "brave", "status": "rate_limited",
+ "detail": "cooling down until 14:20, not asked this time (last refusal at 14:10: HTTP 429)"}
+```
+
+Only `rate_limited` starts a cooldown; `blocked` is usually a local fault
+being fixed, and `timeout`, `empty` and `error` are not refusals. An `ok`
+clears it. If every browser engine is cooling down, Chromium is not launched.
+A skip counts as a failure for the exit code, exactly like a live 429.
+`doctor` probes respect cooldowns too.
+
+**Result cache.** A search that returned results (and was not flagged
+`low_relevance`) is replayed for `cache.ttl_seconds` (default 900) when the
+same query — compared ignoring case and whitespace — is asked again with the
+same source, engine order and limit. `cached` is `null` on a fresh search and
+`{"age_seconds": N}` on a replay, whose `attempts` are the original search's;
+`--pretty` prints `(cached, 3m old — use --fresh to search again)`.
+
+`--fresh` skips the lookup and asks the engines (and caches the new result).
+It does not override cooldowns — bypassing one is exactly the hammering it
+exists to stop. `doctor` never reads or writes the cache: a replayed probe
+would report an engine as working without having asked it.
+
+State lives in `${XDG_CACHE_HOME:-~/.cache}/sought/` and is disposable; a
+missing or corrupt file just means no cooldowns and a cache miss.
 
 ### `low_relevance`
 
@@ -187,6 +227,10 @@ no_proxy = ["localhost", "127.0.0.1"]
 order = ["brave", "startpage", "marginalia"]
 timeout_seconds = 30
 limit = 10
+cooldown_seconds = 600   # leave a rate-limited engine alone this long; 0 disables
+
+[cache]
+ttl_seconds = 900        # replay identical successful searches this long; 0 disables
 
 [tls]
 system_trust = true

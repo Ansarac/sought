@@ -27,10 +27,15 @@ def envelope(
     results: list[Result],
     low_relevance: bool,
 ) -> dict[str, Any]:
-    """Build the audit envelope returned by every search."""
+    """Build the audit envelope returned by every search.
+
+    `cached` is always present so the shape never changes: `null` for a search
+    that just happened, `{"age_seconds": N}` when `sought.state` replays one.
+    """
     return {
         "query": query,
         "engine": engine,
+        "cached": None,
         "attempts": [a.as_dict() for a in attempts],
         "low_relevance": low_relevance,
         "results": [r.as_dict() for r in results],
@@ -47,6 +52,9 @@ def print_pretty(payload: dict[str, Any]) -> None:
     """Write a human-readable rendering of the envelope on stdout."""
     width = min(shutil.get_terminal_size((100, 24)).columns, 120)
 
+    cached = payload.get("cached")
+    if cached:
+        print(f"(cached, {_age(cached.get('age_seconds', 0))} old — use --fresh to search again)")
     for attempt in payload["attempts"]:
         status = attempt["status"]
         if status == "ok":
@@ -75,6 +83,15 @@ def print_pretty(payload: dict[str, Any]) -> None:
         print()
 
     print(f"— {len(results)} results via {payload['engine']}")
+
+
+def _age(seconds: int) -> str:
+    if seconds < 60:  # noqa: PLR2004 — one minute
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:  # noqa: PLR2004 — one hour
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60}m"
 
 
 def _clip(text: str, limit: int) -> str:

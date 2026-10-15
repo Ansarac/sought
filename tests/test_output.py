@@ -90,3 +90,23 @@ def test_long_fields_are_clipped_rather_than_wrapped(capsys):
     lines = capsys.readouterr().out.splitlines()
     assert all(len(line) <= 121 for line in lines)
     assert any(line.endswith("…") for line in lines)
+
+
+def test_a_fresh_envelope_says_it_is_not_cached():
+    assert _payload()["cached"] is None
+
+
+def test_a_fresh_search_prints_no_cache_line(capsys):
+    print_pretty(_payload())
+    assert "cached" not in capsys.readouterr().out
+
+
+def test_a_replay_is_labelled_before_anything_else(capsys):
+    print_pretty(_payload(cached={"age_seconds": 42}))
+    first = capsys.readouterr().out.splitlines()[0]
+    assert first == "(cached, 42s old — use --fresh to search again)"
+
+
+def test_long_cache_ages_read_in_hours(capsys):
+    print_pretty(_payload(cached={"age_seconds": 3 * 3600 + 5 * 60}))
+    assert "3h 5m old" in capsys.readouterr().out

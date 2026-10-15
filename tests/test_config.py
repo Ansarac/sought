@@ -57,6 +57,12 @@ def test_partial_file_keeps_defaults_for_the_rest(tmp_path):
         "[engines]\ntimeout_seconds = 0\n",
         "[engines]\ntimeout_seconds = -1\n",
         "[engines]\nlimit = 'ten'\n",
+        "[engines]\ncooldown_seconds = -1\n",
+        "[engines]\ncooldown_seconds = true\n",
+        "[engines]\ncooldown_seconds = 1.5\n",
+        "[cache]\nttl_seconds = -1\n",
+        "[cache]\nttl_seconds = 'long'\n",
+        "cache = 5\n",
         "[engines]\norder = [1, 2]\n",
         "[tls]\nsystem_trust = 'yes'\n",
         "[proxy]\nhttp = 8080\n",
@@ -101,6 +107,28 @@ def test_the_written_default_parses_back_to_the_builtin_defaults(tmp_path):
     assert loaded.limit == builtin.limit
     assert loaded.system_trust == builtin.system_trust
     assert loaded.browser_ignore_cert_errors == builtin.browser_ignore_cert_errors
+    assert loaded.cooldown_seconds == builtin.cooldown_seconds
+    assert loaded.cache_ttl_seconds == builtin.cache_ttl_seconds
+
+
+def test_cooldown_and_cache_ttl_are_read(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[engines]\ncooldown_seconds = 120\n[cache]\nttl_seconds = 60\n", encoding="utf-8")
+    cfg = load(path)
+    assert (cfg.cooldown_seconds, cfg.cache_ttl_seconds) == (120, 60)
+
+
+def test_zero_switches_cooldown_and_cache_off_rather_than_being_rejected(tmp_path):
+    """Unlike a limit or a timeout, zero is a meaningful duration here."""
+    path = tmp_path / "config.toml"
+    path.write_text("[engines]\ncooldown_seconds = 0\n[cache]\nttl_seconds = 0\n", encoding="utf-8")
+    cfg = load(path)
+    assert (cfg.cooldown_seconds, cfg.cache_ttl_seconds) == (0, 0)
+
+
+def test_the_non_negative_validator_did_not_loosen_positive_int():
+    with pytest.raises(ConfigError):
+        config_mod.positive_int(0, "engines.limit")
 
 
 def test_proxy_mapping_is_none_when_nothing_is_set():

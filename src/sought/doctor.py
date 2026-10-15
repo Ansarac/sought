@@ -290,7 +290,10 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool) -> list[Check]:
             checks.append(Check(f"engine {name}", ok=False, detail="skipped: no chromium", required=False))
             continue
         probed += 1
-        payload = search_run("sought self test", config=cfg, source=name)
+        # Never from the result cache: a replayed probe would report an engine
+        # as working without having asked it. Cooldowns still apply — a probe
+        # is a real request, and an engine cooling down is reported as such.
+        payload = search_run("sought self test", config=cfg, source=name, cache="off")
         attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
         ok = attempt["status"] == "ok"
         detail = f"{attempt.get('count', 0)} results" if ok else f"{attempt['status']} — {attempt.get('detail', '')}"

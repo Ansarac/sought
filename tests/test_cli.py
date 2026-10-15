@@ -203,3 +203,57 @@ def test_a_quoted_query_starting_with_a_subcommand_word_reaches_search(fake_sear
     # The search path emits the JSON envelope; `doctor` emits a check report.
     assert cli.main(["doctor who"]) == 0
     assert "attempts" in json.loads(capsys.readouterr().out)
+
+
+def _capture_run(monkeypatch, payload):
+    import sought.search
+
+    seen = {}
+
+    def run(*a, **k):
+        seen.update(k)
+        return payload
+
+    monkeypatch.setattr(sought.search, "run", run)
+    return seen
+
+
+def test_a_plain_search_uses_the_cache(fake_search, monkeypatch):
+    seen = _capture_run(monkeypatch, fake_search)
+    assert cli.main(["hello"]) == 0
+    assert seen["cache"] == "use"
+
+
+def test_fresh_skips_the_cache_lookup(fake_search, monkeypatch):
+    seen = _capture_run(monkeypatch, fake_search)
+    assert cli.main(["hello", "--fresh"]) == 0
+    assert seen["cache"] == "refresh"
+
+
+def test_the_fresh_help_says_cooldowns_still_apply(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--fresh" in out
+    assert "cooling down" in out
+
+
+def test_a_cached_replay_is_labelled_in_pretty_output(fake_search, capsys):
+    fake_search["cached"] = {"age_seconds": 200}
+    assert cli.main(["hello", "--pretty"]) == 0
+    assert "(cached, 3m old — use --fresh to search again)" in capsys.readouterr().out
+
+
+def test_every_engine_cooling_down_exits_two_like_a_live_refusal(monkeypatch, capsys):
+    """A cooldown skip is `rate_limited`: sought did not get an answer, so it is not exit 1."""
+    import sought.search
+    from sought import state
+    from sought.engines.base import Attempt
+
+    monkeypatch.setattr(cli, "_load_config", lambda **k: Config(order=("marginalia",)))  # noqa: ARG005
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": lambda *a, **k: pytest.fail("cooling down")})  # noqa: ARG005
+    state.note_outcome(Attempt("marginalia", "rate_limited", "HTTP 429"), config=Config())
+
+    assert cli.main(["hello"]) == 2
+    err = capsys.readouterr().err
+    assert "marginalia=rate_limited" in err

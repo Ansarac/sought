@@ -212,3 +212,74 @@ def test_the_mark_distinguishes_required_from_optional_failures():
     assert doctor.Check("a", ok=True, detail="").mark == "✓"
     assert doctor.Check("a", ok=False, detail="").mark == "✗"
     assert doctor.Check("a", ok=False, detail="", required=False).mark == "!"
+
+
+def test_probes_never_read_or_write_the_result_cache(monkeypatch):
+    """A replayed probe would report an engine as working without having asked it."""
+    import sought.search
+    from sought import state
+    from sought.engines.base import EngineFailure, Result
+
+    hit = [Result("sought", "https://example.com", "sought self test")]
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": lambda *a, **k: hit})  # noqa: ARG005
+    cfg = Config(order=("marginalia",))
+    # A user searched for exactly the probe query a moment ago and it worked.
+    sought.search.run("sought self test", config=cfg, source="marginalia")
+
+    def refused(*a, **k):
+        raise EngineFailure("blocked", "HTTP 403")
+
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": refused})
+    checks = doctor._engine_probes(cfg, chromium_ok=True)  # noqa: SLF001
+
+    assert checks[0].ok is False
+    assert "HTTP 403" in checks[0].detail
+
+    # And a successful probe leaves nothing behind for a real search to replay.
+    key = state.result_key("sought self test", source="marginalia", order=cfg.order, limit=cfg.limit)
+    (state.cache_dir() / state.RESULTS_DIR / f"{key}.json").unlink()
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": lambda *a, **k: hit})  # noqa: ARG005
+    assert doctor._engine_probes(cfg, chromium_ok=True)[0].ok is True  # noqa: SLF001
+    assert state.load_result(key, ttl=cfg.cache_ttl_seconds) is None
+
+
+def test_a_cooling_down_engine_is_reported_as_a_warning_and_not_probed(monkeypatch):
+    import sought.search
+    from sought import state
+    from sought.engines.base import Attempt, Result
+
+    hit = [Result("sought", "https://example.com", "sought self test")]
+    monkeypatch.setattr(
+        sought.search,
+        "_GENERAL",
+        {
+            "brave": lambda *a, **k: pytest.fail("brave is cooling down"),  # noqa: ARG005
+            "marginalia": lambda *a, **k: hit,  # noqa: ARG005
+        },
+    )
+    monkeypatch.setattr(sought.search, "browser_session", lambda _cfg: pytest.fail("must not launch chromium"))
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+
+    checks = doctor._engine_probes(Config(order=("brave", "marginalia")), chromium_ok=True)  # noqa: SLF001
+
+    brave = checks[0]
+    assert brave.name == "engine brave"
+    assert brave.ok is False
+    assert brave.required is False
+    assert brave.mark == "!"
+    assert "cooling down" in brave.detail
+    assert checks[1].ok is True
+
+
+def test_a_rate_limited_probe_starts_a_cooldown(monkeypatch):
+    import sought.search
+    from sought import state
+    from sought.engines.base import EngineFailure
+
+    def refused(*a, **k):
+        raise EngineFailure("rate_limited", "HTTP 429")
+
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": refused})
+    doctor._engine_probes(Config(order=("marginalia",)), chromium_ok=True)  # noqa: SLF001
+
+    assert "marginalia" in state.cooling_down(["marginalia"], config=Config())

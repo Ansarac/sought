@@ -100,6 +100,14 @@ def _search(argv: list[str]) -> int:
     parser.add_argument("--limit", type=int, metavar="N", help="maximum results (default from config)")
     parser.add_argument("--timeout", type=int, metavar="SEC", help="per-engine timeout (default from config)")
     parser.add_argument("--pretty", action="store_true", help="human-readable output instead of JSON")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "ignore a cached result for this exact search and ask the engines again (the new result is still "
+            "cached). Engines cooling down after a rate limit stay skipped: asking them early prolongs the ban"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"sought {__version__}")
     args = parser.parse_args(argv)
 
@@ -112,7 +120,7 @@ def _search(argv: list[str]) -> int:
 
     from sought.search import run
 
-    payload = run(query, config=cfg, source=args.source)
+    payload = run(query, config=cfg, source=args.source, cache="refresh" if args.fresh else "use")
 
     if args.pretty:
         print_pretty(payload)
