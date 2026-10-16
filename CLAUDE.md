@@ -43,10 +43,16 @@ does not have.
 unrelated results rather than an error. This is what `low_relevance` exists to
 catch, and it is not worth inviting in.
 
-**Do not add Google directly, or DuckDuckGo, or Reddit.** A shared NAT egress
-IP can be banned network-wide by Google (`/sorry/index`), and DuckDuckGo and
-Reddit are commonly blocked at the network layer. Startpage reaches the Google
-index from its own infrastructure and does work.
+**Do not add Google directly, or DuckDuckGo, or Reddit.** Google refuses any
+automated browser per request (`/sorry/index`): measured over one shared
+datacenter egress IP, a real browser with no cookies got results while every
+Playwright-launched Chromium was refused, and adding only `--enable-automation`
+to the real browser was enough to be refused too — the trigger is
+`navigator.webdriver`, not the IP (`docs/findings/2026-10-egress-google-windows.md`).
+Turning that flag off is fingerprint spoofing, ruled out below. A client that
+runs no JavaScript gets an HTTP 200 shell with no results, which would read as
+`empty`. DuckDuckGo and Reddit are commonly blocked at the network layer.
+Startpage reaches the Google index from its own infrastructure and does work.
 
 **Do not replace `truststore` with `verify=False`.** They treat the same
 symptom and are not equivalent: `truststore` verifies against the OS trust
