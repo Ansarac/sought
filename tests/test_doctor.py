@@ -7,14 +7,26 @@ broken is worse than no summary, so these tests pin the rule down.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
-from sought import doctor
+from sought import doctor, net
 from sought.config import Config, ProxyConfig
 
 # Captured before `stub_checks` can replace them, for the tests that want the real ones.
 _REAL_TLS_NOTE = doctor._tls_note  # noqa: SLF001
 _REAL_ENGINE_PROBES = doctor._engine_probes  # noqa: SLF001
+
+PAC = net.SystemProxy(pac_url="http://wpad.example/proxy.pac")
+
+
+@pytest.fixture(autouse=True)
+def no_system_proxy(monkeypatch):
+    """Keep the developer's own Windows proxy settings out of the report under test."""
+    monkeypatch.setattr(net, "system_proxy", lambda: None)
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture
@@ -151,10 +163,9 @@ SECRET = "s3cr3t"  # noqa: S105 — a fixture value, and the point is that it mu
 
 def test_credentials_in_an_environment_proxy_are_not_printed(monkeypatch):
     """Doctor output is meant to be pasted into bug reports. It must be safe to paste."""
+    # The autouse fixture has already cleared every case of every variable;
+    # clearing `https_proxy` here would delete this one again on Windows.
     monkeypatch.setenv("HTTPS_PROXY", f"http://alice:{SECRET}@proxy.internal.example:8080")
-    monkeypatch.delenv("HTTP_PROXY", raising=False)
-    monkeypatch.delenv("https_proxy", raising=False)
-    monkeypatch.delenv("http_proxy", raising=False)
 
     detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
 
@@ -207,6 +218,100 @@ def test_no_proxy_anywhere_says_so_in_words(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
     assert "none set — all engines connect directly" in detail
+
+
+def test_one_windows_variable_is_reported_once(monkeypatch):
+    """`https_proxy` and `HTTPS_PROXY` are the same variable on Windows."""
+    import os
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    both = {"HTTPS_PROXY": "http://proxy.example:8080", "https_proxy": "http://proxy.example:8080"}
+    monkeypatch.setattr(os, "environ", both)
+    assert doctor._environment_proxies() == [("HTTPS_PROXY", "http://proxy.example:8080")]  # noqa: SLF001
+
+
+def test_a_pac_script_is_not_reported_as_no_proxy(monkeypatch):
+    """The browser uses it, so "all engines connect directly" would be false."""
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
+    assert "connect directly" not in detail.split("HTTP client")[0]
+    assert PAC.pac_url in detail
+    assert "cannot evaluate PAC" in detail
+
+
+def test_a_windows_manual_proxy_reaches_both_transports(monkeypatch):
+    monkeypatch.setattr(net, "system_proxy", lambda: net.SystemProxy(server=f"alice:{SECRET}@proxy.example:3128"))
+    detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
+    assert "HTTP client and browser" in detail
+    assert SECRET not in detail
+    assert "proxy.example:3128" in detail
+
+
+def test_the_environment_beats_the_windows_settings_in_the_report(monkeypatch):
+    """Both requests and Chromium take the variable first, so that is the route."""
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
+    assert "inherited from environment" in detail
+    assert PAC.pac_url not in detail
+
+
+_MARGINALIA_DOWN = [doctor.Check("engine marginalia", ok=False, detail="blocked — Connection refused", required=False)]
+
+
+def test_a_pac_script_is_blamed_when_the_http_engine_cannot_connect(monkeypatch):
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    check = doctor._route_note(Config(), probes=_MARGINALIA_DOWN)  # noqa: SLF001
+    assert check is not None
+    assert check.required is False
+    assert "marginalia" in check.detail
+    assert "[proxy]" in check.detail
+
+
+def test_a_pac_script_says_nothing_while_the_http_engine_works(monkeypatch):
+    """Direct egress often works beside a PAC; a permanent warning would be noise."""
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    healthy = [doctor.Check("engine marginalia", ok=True, detail="8 results", required=False)]
+    assert doctor._route_note(Config(), probes=healthy) is None  # noqa: SLF001
+
+
+def test_a_rate_limit_is_not_blamed_on_the_route(monkeypatch):
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    limited = [doctor.Check("engine marginalia", ok=False, detail="rate_limited — HTTP 429", required=False)]
+    assert doctor._route_note(Config(), probes=limited) is None  # noqa: SLF001
+
+
+def test_a_configured_proxy_silences_the_route_note(monkeypatch):
+    monkeypatch.setattr(net, "system_proxy", lambda: PAC)
+    cfg = Config(proxy=ProxyConfig(https="http://proxy.example:3128"))
+    assert doctor._route_note(cfg, probes=_MARGINALIA_DOWN) is None  # noqa: SLF001
+
+
+def test_without_a_pac_script_there_is_no_route_note():
+    assert doctor._route_note(Config(), probes=_MARGINALIA_DOWN) is None  # noqa: SLF001
+
+
+_CERT_FAILURE = [
+    doctor.Check("engine brave", ok=False, detail="blocked — net::ERR_CERT_AUTHORITY_INVALID", required=False)
+]
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected", "absent"),
+    [
+        ("linux", "sql:$HOME/.pki/nssdb", "-addstore"),
+        ("win32", "certutil -user -addstore Root", "nssdb"),
+        ("darwin", "security add-trusted-cert", "nssdb"),
+    ],
+)
+def test_the_ca_remedy_matches_the_platform(monkeypatch, platform, expected, absent):
+    """Windows' certutil is a different program; the NSS command line must never be printed there."""
+    monkeypatch.setattr(sys, "platform", platform)
+    check = doctor._tls_note(Config(), probes=_CERT_FAILURE)  # noqa: SLF001
+    assert check is not None
+    assert expected in check.detail
+    assert absent not in check.detail
+    assert "tls.browser_ignore_cert_errors" in check.detail
 
 
 def test_the_mark_distinguishes_required_from_optional_failures():

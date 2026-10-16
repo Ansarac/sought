@@ -46,7 +46,30 @@ examples:
 
 def entrypoint() -> None:
     """Console-script entry point."""
+    for stream in (sys.stdout, sys.stderr):
+        ensure_utf8(stream)
     sys.exit(main(sys.argv[1:]))
+
+
+def ensure_utf8(stream: object) -> None:
+    """Make a text stream write UTF-8, so no result title can crash the output.
+
+    Python encodes a redirected stdout with the locale's code page, and on
+    Windows that is a legacy one (cp936, cp1252, ...). Measured on a cp936
+    machine: `--pretty` and `doctor` died with UnicodeEncodeError on the first
+    `✓`, and the JSON output dies the same way on any title outside the code
+    page. A crash is exit 1, which is "searched fine, found nothing" — a false
+    statement — and doctor lost its probe results after paying for them.
+
+    UTF-8 rather than `errors="replace"` on the native code page: JSON is
+    UTF-8 by definition, and replacement would quietly rewrite result titles.
+    Interactive Windows consoles already get UTF-8 from Python, so this only
+    changes pipes and files.
+    """
+    encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+    reconfigure = getattr(stream, "reconfigure", None)
+    if encoding != "utf8" and reconfigure is not None:
+        reconfigure(encoding="utf-8")
 
 
 def main(argv: Sequence[str]) -> int:

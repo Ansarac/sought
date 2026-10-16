@@ -250,6 +250,16 @@ last-one-wins over the environment's iteration order. Measured, not inferred.
 If your environment sets both cases, set the proxy here instead and the
 ambiguity goes away.
 
+**On Windows with a PAC script** (Internet Options → "Use automatic
+configuration script"), the two transports also part ways, and no environment
+variable shows it: Chromium follows the PAC script, `requests` cannot evaluate
+one and connects directly. On networks where direct egress works anyway this
+is harmless; where it does not, `marginalia` and the vertical sources fail
+while the browser engines work. `doctor` reports the PAC script on its proxy
+line, and says so explicitly when `marginalia` cannot connect. The fix is to
+name the proxy the PAC script returns in `[proxy]`, which both transports then
+use.
+
 ### A note on the two TLS settings
 
 They are not the same knob and they are not equally safe.
@@ -289,6 +299,16 @@ Measured on a TLS-inspecting corporate proxy: with the database absent,
 `brave` reports `blocked` / `ERR_CERT_AUTHORITY_INVALID`; with the root CA
 imported, `brave` and `startpage` both return results and
 `browser_ignore_cert_errors` stays `false`.
+
+On **Windows** and **macOS** there is no separate database: Chromium verifies
+against the OS store (the Windows certificate store, the keychain), the same
+one `truststore` gives `requests`. Measured on Windows behind a TLS-inspecting
+proxy whose CA was already in the Windows store: both browser engines verified
+fine with the flag off. If a browser engine does fail on a certificate there,
+the CA is missing from the OS store itself — `certutil -user -addstore Root
+<ca>.crt` on Windows (a different program from the NSS `certutil` above),
+`security add-trusted-cert` on macOS. `doctor` prints the command for the
+platform it runs on.
 
 Reach for the flag only where importing a CA is not possible:
 

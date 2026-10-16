@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sought import config as config_mod
-from sought import state
+from sought import net, state
 from sought.engines.base import BROWSER_ENGINES, GENERAL_ENGINES
 
 if TYPE_CHECKING:
@@ -71,6 +71,9 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
     tls = _tls_note(cfg, probes=probes)
     if tls is not None:
         checks.append(tls)
+    route = _route_note(cfg, probes=probes)
+    if route is not None:
+        checks.append(route)
     checks.extend(probes)
 
     print("sought doctor\n")
@@ -218,12 +221,7 @@ def _tls_note(cfg: Config, *, probes: list[Check]) -> Check | None:
             "browser TLS",
             ok=False,
             detail=(
-                f"{', '.join(failing)} failed on a certificate. Chromium reads its own NSS "
-                "database, not the OS trust store, so behind a TLS-inspecting proxy it rejects "
-                "a CA the rest of this machine trusts. Import that CA and verification stays on:\n"
-                "      certutil -d sql:$HOME/.pki/nssdb -A -t 'C,,' -n proxy-ca -i <ca>.crt\n"
-                "      (needs libnss3-tools; `certutil -d sql:$HOME/.pki/nssdb -N --empty-password` "
-                "first if the database does not exist yet)\n"
+                f"{', '.join(failing)} failed on a certificate. {_ca_import_hint()}\n"
                 "      Only if that is not possible, tls.browser_ignore_cert_errors = true makes "
                 "the browser accept any certificate instead. marginalia and the vertical sources "
                 "are unaffected either way."
@@ -232,6 +230,83 @@ def _tls_note(cfg: Config, *, probes: list[Check]) -> Check | None:
         )
 
     return None
+
+
+def _ca_import_hint() -> str:
+    """Where Chromium looks for a proxy CA on this platform, and how to put one there.
+
+    The Linux remedy must not be printed elsewhere. On Windows `certutil` is a
+    different program with the same name, so the NSS command line fails or
+    does something else entirely — and the premise is wrong there too: Chromium
+    on Windows verifies against the Windows certificate store, the same one
+    `truststore` gives requests. Measured on a TLS-inspecting corporate proxy
+    whose CA was in the Windows store: no certificate error from either
+    browser engine, with verification on.
+    """
+    if sys.platform == "win32":
+        return (
+            "Chromium on Windows verifies against the Windows certificate store, so the proxy's CA "
+            "is missing from it. Import the root of the chain into your user store and verification "
+            "stays on (requests reads the same store):\n"
+            "      certutil -user -addstore Root <ca>.crt\n"
+            "      (or certmgr.msc → Trusted Root Certification Authorities → Import)"
+        )
+    if sys.platform == "darwin":
+        return (
+            "Chromium on macOS verifies against the system keychain, so the proxy's CA is missing "
+            "from it. Import the root of the chain and verification stays on:\n"
+            "      security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db <ca>.crt"
+        )
+    return (
+        "Chromium reads its own NSS database, not the OS trust store, so behind a TLS-inspecting "
+        "proxy it rejects a CA the rest of this machine trusts. Import that CA and verification stays on:\n"
+        "      certutil -d sql:$HOME/.pki/nssdb -A -t 'C,,' -n proxy-ca -i <ca>.crt\n"
+        "      (needs libnss3-tools; `certutil -d sql:$HOME/.pki/nssdb -N --empty-password` "
+        "first if the database does not exist yet)"
+    )
+
+
+# Statuses that point at the route rather than at the engine's own answer.
+_ROUTE_FAILURES = frozenset({"blocked", "timeout", "error"})
+_HTTP_ENGINES = frozenset({"marginalia"})
+
+
+def _route_note(cfg: Config, *, probes: list[Check]) -> Check | None:
+    """Say when a PAC script is the likely reason the HTTP client cannot connect.
+
+    Only when it is biting, for the reason `_tls_note` gives: a PAC script
+    sends the browser and the HTTP client down different routes, and on many
+    networks direct egress works anyway, so warning on every PAC machine would
+    be a permanent `!` nobody reads. A plain-HTTP engine failing to connect on
+    a machine whose browser follows a PAC is the case worth a line.
+    """
+    if cfg.proxy.any_set or _environment_proxies():
+        return None
+    system = net.system_proxy()
+    if system is None or not system.pac_url or system.server:
+        return None
+    failing = [
+        c.name.removeprefix("engine ")
+        for c in probes
+        if c.name.removeprefix("engine ") in _HTTP_ENGINES
+        and not c.ok
+        and c.detail.split(" — ", 1)[0] in _ROUTE_FAILURES
+    ]
+    if not failing:
+        return None
+    return Check(
+        "proxy route",
+        ok=False,
+        detail=(
+            f"{', '.join(failing)} could not connect. The browser engines follow the Windows PAC script "
+            f"({system.pac_url}); the HTTP client cannot evaluate one and connects directly. Name the "
+            "proxy the PAC script returns in the config file, and both transports use it:\n"
+            "      [proxy]\n"
+            '      https = "http://<proxy-host>:<port>"\n'
+            "      The vertical sources (--source) take the same route as marginalia."
+        ),
+        required=False,
+    )
 
 
 def _cert_failures(probes: list[Check]) -> list[str]:
@@ -262,9 +337,29 @@ def _cooldown_note(cooling: list[Cooldown]) -> Check | None:
     return Check("cooldowns", ok=False, detail=f"{engines}; clear with: {CLEAR_STATE}", required=False)
 
 
-def _proxy_checks(cfg: Config) -> list[Check]:
+_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
+
+
+def _environment_proxies() -> list[tuple[str, str]]:
+    """Return the proxy variables that are set, each once.
+
+    Windows environment names are case-insensitive, so `https_proxy` and
+    `HTTPS_PROXY` are one variable there and would otherwise be reported twice.
+    """
     import os
 
+    seen: set[str] = set()
+    live: list[tuple[str, str]] = []
+    for name in _PROXY_VARS:
+        key = name.upper() if sys.platform == "win32" else name
+        value = os.environ.get(name, "")
+        if value and key not in seen:
+            seen.add(key)
+            live.append((name, value))
+    return live
+
+
+def _proxy_checks(cfg: Config) -> list[Check]:
     # Both transports go through whatever is reported here, and saying so is
     # the point: a green proxy line above a red `marginalia: Connection
     # refused` should tell the reader where to look, not just that a variable
@@ -275,15 +370,33 @@ def _proxy_checks(cfg: Config) -> list[Check]:
             f"config ({reach}): https={_redact(cfg.proxy.https) or '-'} http={_redact(cfg.proxy.http) or '-'}"
             f" no_proxy={cfg.proxy.no_proxy_value() or '-'}"
         )
+    elif live := _environment_proxies():
+        detail = f"inherited from environment ({reach}): " + ", ".join(f"{k}={_redact(v)}" for k, v in live)
+    elif (system := net.system_proxy()) is not None:
+        detail = _system_proxy_detail(system)
     else:
-        env = {k: os.environ.get(k, "") for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
-        live = [f"{k}={_redact(v)}" for k, v in env.items() if v]
-        detail = (
-            f"inherited from environment ({reach}): " + ", ".join(live)
-            if live
-            else "none set — all engines connect directly"
-        )
+        detail = "none set — all engines connect directly"
     return [Check("proxy", ok=True, detail=detail, required=False)]
+
+
+def _system_proxy_detail(system: net.SystemProxy) -> str:
+    """Describe the Windows proxy settings by what each transport does with them.
+
+    "None set" would be false here: nothing is in the environment, yet the
+    browser does use a proxy. Saying which transport takes which route is the
+    whole value of the line.
+    """
+    if system.pac_url and system.server:
+        return (
+            f"Windows settings, no environment variable: the browser follows the PAC script {system.pac_url}, "
+            f"the HTTP client uses the manual proxy {_redact(system.server)} — the two can differ"
+        )
+    if system.pac_url:
+        return (
+            f"Windows PAC script {system.pac_url}, no environment variable: the browser follows it, "
+            "the HTTP client cannot evaluate PAC and connects directly"
+        )
+    return f"Windows manual proxy (HTTP client and browser): {_redact(system.server)}"
 
 
 def _redact(url: str) -> str:

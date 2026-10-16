@@ -7,6 +7,9 @@ template, and then read by nothing. Worse, configuring any proxy at all set
 
 from __future__ import annotations
 
+import sys
+from typing import Self
+
 import pytest
 
 from sought import net
@@ -77,6 +80,7 @@ def test_the_config_wins_over_the_environment(monkeypatch):
     assert net.proxy_bypass_list(Config(proxy=PROXIED)) == "localhost,127.0.0.1,.internal"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows environment names are case-insensitive: one variable")
 def test_the_lowercase_variable_wins_over_the_uppercase_one(monkeypatch):
     """Matching Chromium, which prefers the lowercase name when the two disagree."""
     monkeypatch.setenv("no_proxy", "lower.example")
@@ -95,6 +99,59 @@ def test_the_requests_mapping_carries_the_bypass_list_under_its_documented_key()
 def test_the_mapping_is_none_when_no_proxy_is_configured():
     """A bypass list with nothing to bypass is not a reason to stop inheriting."""
     assert ProxyConfig(no_proxy=("localhost",)).as_requests_mapping() is None
+
+
+def test_there_are_no_system_proxy_settings_off_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert net.system_proxy() is None
+
+
+class _FakeKey:
+    def __init__(self, values) -> None:
+        self.values = values
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """Serve WinINET values from a dict instead of the real registry."""
+    import types
+
+    def install(values):
+        fake = types.SimpleNamespace(
+            HKEY_CURRENT_USER=object(),
+            OpenKey=lambda _root, _path: _FakeKey(values),
+            QueryValueEx=lambda key, name: (key.values[name], 1) if name in key.values else _missing(name),
+        )
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setitem(sys.modules, "winreg", fake)
+
+    return install
+
+
+def _missing(name):
+    raise FileNotFoundError(name)
+
+
+def test_a_pac_script_is_reported(registry):
+    registry({"ProxyEnable": 0, "AutoConfigURL": "http://wpad.example/proxy.pac", "ProxyServer": "stale:3128"})
+    assert net.system_proxy() == net.SystemProxy(pac_url="http://wpad.example/proxy.pac", server="")
+
+
+def test_a_manual_proxy_counts_only_while_it_is_switched_on(registry):
+    """ProxyServer outlives ProxyEnable=0; urllib ignores it then, and so must the report."""
+    registry({"ProxyEnable": 1, "ProxyServer": "proxy.example:3128"})
+    assert net.system_proxy() == net.SystemProxy(server="proxy.example:3128")
+
+
+def test_nothing_configured_in_windows_is_none(registry):
+    registry({"ProxyEnable": 0, "ProxyServer": "stale:3128"})
+    assert net.system_proxy() is None
 
 
 def test_the_session_still_announces_a_desktop_user_agent():

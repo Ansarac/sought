@@ -68,6 +68,24 @@ after `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n proxy-ca -i <root>.crt`,
 Import the root of the chain, not the intermediate. `doctor` recommends this
 route first and the flag only as a fallback; keep that ordering.
 
+**The NSS remedy is Linux-only; never print it elsewhere.** On Windows,
+Chromium verifies against the Windows certificate store — measured behind a
+TLS-inspecting proxy with its CA in that store: no certificate error, flag
+off — and Windows' own `certutil` is an unrelated program that the NSS command
+line breaks. `doctor._ca_import_hint` branches on the platform.
+
+**On Windows, `requests` cannot follow a PAC script and Chromium does.** With
+no proxy in the config or environment, Chromium uses the WinINET settings,
+PAC included; `urllib.request.getproxies` reads only a manual `ProxyServer`
+(and only with `ProxyEnable` on). Measured on a PAC-only machine: browser
+engines via the proxy, `requests` direct. `net.system_proxy` exists so
+`doctor` can say so instead of "all engines connect directly".
+
+**Output must survive a non-UTF-8 code page.** A redirected stdout on Windows
+is encoded with the legacy code page; a `✓` crashed `--pretty` and `doctor`
+with exit 1, which reads as "found nothing". `cli.ensure_utf8` switches the
+streams to UTF-8 at the entry point.
+
 **Always hand Chromium its proxy explicitly, even one inherited from the
 environment.** Chromium on Linux reads `HTTPS_PROXY` only outside a desktop
 session; under GNOME it takes gsettings instead. Measured on a GNOME machine

@@ -6,7 +6,10 @@ HTTP clients. See `sought.browser` for those.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
+from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +72,51 @@ def environment_proxy() -> str | None:
 
     proxies = getproxies_environment()
     return proxies.get("https") or proxies.get("http") or None
+
+
+@dataclass(frozen=True)
+class SystemProxy:
+    """The proxy Windows' own settings name, which the two transports read differently."""
+
+    pac_url: str = ""
+    server: str = ""  # only when the manual proxy is switched on (ProxyEnable)
+
+
+_INTERNET_SETTINGS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+
+def system_proxy() -> SystemProxy | None:
+    """Return the per-user WinINET proxy settings, or None off Windows or when none are set.
+
+    This is the one route the transports genuinely disagree on, and no
+    environment variable shows it. Chromium on Windows follows these settings,
+    PAC script included, whenever it is not handed `--proxy-server`. requests
+    resolves proxies through `urllib.request.getproxies`, which falls back to
+    the registry's `ProxyServer` — but only with `ProxyEnable` on — and never
+    evaluates a PAC script. Measured on a PAC-only corporate machine: the
+    browser engines went through the proxy, `requests` went direct, and doctor
+    said "all engines connect directly".
+
+    WPAD auto-detection lives in an undocumented binary blob and is not read.
+    """
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    values: dict[str, object] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _INTERNET_SETTINGS) as key:
+            for name in ("ProxyEnable", "ProxyServer", "AutoConfigURL"):
+                with contextlib.suppress(OSError):
+                    values[name] = winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+    pac_url = str(values.get("AutoConfigURL") or "")
+    server = str(values.get("ProxyServer") or "") if values.get("ProxyEnable") else ""
+    if not pac_url and not server:
+        return None
+    return SystemProxy(pac_url=pac_url, server=server)
 
 
 @cache
