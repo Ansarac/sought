@@ -69,7 +69,10 @@ def ensure_utf8(stream: object) -> None:
     encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
     reconfigure = getattr(stream, "reconfigure", None)
     if encoding != "utf8" and reconfigure is not None:
-        reconfigure(encoding="utf-8")
+        # Keep the stream's own error handler. Given only `encoding`,
+        # reconfigure resets it to "strict", which would turn stderr's
+        # backslashreplace into a new way to crash with exit 1.
+        reconfigure(encoding="utf-8", errors=getattr(stream, "errors", None) or "strict")
 
 
 def main(argv: Sequence[str]) -> int:

@@ -239,6 +239,15 @@ def test_a_pac_script_is_not_reported_as_no_proxy(monkeypatch):
     assert "cannot evaluate PAC" in detail
 
 
+def test_credentials_in_a_pac_url_are_not_printed(monkeypatch):
+    """A PAC URL can carry a token or user:pass as easily as a proxy URL, and the report goes to bug trackers."""
+    pac = net.SystemProxy(pac_url=f"http://alice:{SECRET}@wpad.example/proxy.pac")
+    monkeypatch.setattr(net, "system_proxy", lambda: pac)
+    detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001
+    assert SECRET not in detail
+    assert "wpad.example/proxy.pac" in detail
+
+
 def test_a_windows_manual_proxy_reaches_both_transports(monkeypatch):
     monkeypatch.setattr(net, "system_proxy", lambda: net.SystemProxy(server=f"alice:{SECRET}@proxy.example:3128"))
     detail = doctor._proxy_checks(Config())[0].detail  # noqa: SLF001

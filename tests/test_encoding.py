@@ -32,6 +32,13 @@ def test_a_utf8_stream_is_left_alone():
     assert stream.errors == "strict"
 
 
+def test_the_error_handler_survives_the_switch():
+    """Python gives stderr backslashreplace; losing it would make diagnostics a crash path."""
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp936", errors="backslashreplace")
+    ensure_utf8(stream)
+    assert stream.errors == "backslashreplace"
+
+
 def test_a_stream_that_cannot_be_reconfigured_is_left_alone():
     ensure_utf8(io.StringIO())
 
@@ -46,7 +53,10 @@ def test_the_console_script_survives_a_legacy_code_page():
         check=False,
     )
     assert b"UnicodeEncodeError" not in result.stderr
-    assert "sought doctor" in result.stdout.decode("utf-8")
+    # The report ran to its verdict. Exit 2 is a legitimate outcome here (no
+    # Chromium on a CI runner); exit 1 is what the crash used to look like.
+    assert "Overall:" in result.stdout.decode("utf-8")
+    assert result.returncode != 1
 
 
 def _minimal_env() -> dict[str, str]:

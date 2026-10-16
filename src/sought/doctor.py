@@ -299,7 +299,7 @@ def _route_note(cfg: Config, *, probes: list[Check]) -> Check | None:
         ok=False,
         detail=(
             f"{', '.join(failing)} could not connect. The browser engines follow the Windows PAC script "
-            f"({system.pac_url}); the HTTP client cannot evaluate one and connects directly. Name the "
+            f"({_redact(system.pac_url)}); the HTTP client cannot evaluate one and connects directly. Name the "
             "proxy the PAC script returns in the config file, and both transports use it:\n"
             "      [proxy]\n"
             '      https = "http://<proxy-host>:<port>"\n'
@@ -388,12 +388,12 @@ def _system_proxy_detail(system: net.SystemProxy) -> str:
     """
     if system.pac_url and system.server:
         return (
-            f"Windows settings, no environment variable: the browser follows the PAC script {system.pac_url}, "
+            f"Windows settings, no environment variable: the browser follows the PAC script {_redact(system.pac_url)}, "
             f"the HTTP client uses the manual proxy {_redact(system.server)} — the two can differ"
         )
     if system.pac_url:
         return (
-            f"Windows PAC script {system.pac_url}, no environment variable: the browser follows it, "
+            f"Windows PAC script {_redact(system.pac_url)}, no environment variable: the browser follows it, "
             "the HTTP client cannot evaluate PAC and connects directly"
         )
     return f"Windows manual proxy (HTTP client and browser): {_redact(system.server)}"
