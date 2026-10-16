@@ -28,6 +28,7 @@ only search result pages that lie.
 sought "playwright bypass cloudflare 2025"        # JSON, for reading programmatically
 sought "rust async runtime comparison" --pretty   # table, for showing a human
 sought "..." --limit 5
+sought "..." --fresh                              # skip a cached result for this exact search
 ```
 
 JSON is the default because the envelope matters:
@@ -36,6 +37,7 @@ JSON is the default because the envelope matters:
 {
   "query": "anthropic claude pricing",
   "engine": "startpage",
+  "cached": null,
   "attempts": [
     {"engine": "brave", "status": "rate_limited", "detail": "bot wall: \"verifying you're not a bot\""},
     {"engine": "startpage", "status": "ok", "count": 8}
@@ -47,7 +49,7 @@ JSON is the default because the envelope matters:
 
 ## Reading the envelope
 
-Check these two fields before you trust the results.
+Check these fields before you trust the results.
 
 **`low_relevance: true`** — not one result mentions any significant word from
 the query. Treat the results as unverified. Either the engine is serving
@@ -62,13 +64,29 @@ it tells you *why* there is nothing. Statuses:
 |---|---|---|
 | `ok` | answered | — |
 | `empty` | answered, matched nothing | reword the query |
-| `rate_limited` | quota or bot wall | it fell through to the next engine; fine |
+| `rate_limited` | quota or bot wall, or still cooling down from one | it fell through to the next engine; fine |
 | `blocked` | network or engine refused | check `sought doctor` |
 | `timeout` | no response in time | retry, or raise `--timeout` |
 | `error` | unexpected failure | read `detail` |
 
 If `results` is empty **and** `attempts` is empty, that is a bug — report it
 rather than concluding the web has no answer.
+
+**Cooldowns.** After an engine answers `rate_limited`, sought leaves it alone
+for a while (10 minutes by default) instead of asking again and prolonging the
+ban. It still appears in `attempts`, as `rate_limited` with a detail like
+`cooling down until 14:20, not asked this time (last refusal at 14:10: HTTP
+429)` — read that as "not asked", not as a fresh refusal. Retrying sooner will
+not help, and `--fresh` does not override it: use another engine or a vertical
+source. If the cause has been fixed (the user changed network or proxy),
+`sought config --clear-state` ends the cooldowns; do not run it just to retry
+an engine that refused you.
+
+**`cached`** — `null` for a search that just happened. `{"age_seconds": N}`
+means this exact search (same query, source, order and limit) succeeded N
+seconds ago and was replayed instead of asking the engines again; `attempts`
+is that original search's audit trail. Only searches with results are cached,
+for 15 minutes by default. Add `--fresh` if you need a live answer.
 
 ## Exit codes
 
@@ -120,7 +138,8 @@ sought doctor --fix      # install a missing chromium
 
 `doctor` exits non-zero if any required check fails, so its summary line can be
 trusted. Individual engines being down is a warning, not a failure — that is
-what the chain is for. Only "every configured engine failed" is fatal.
+what the chain is for. Only "every configured engine failed" is fatal. A
+`cooldowns:` line lists engines searches are currently skipping.
 
-Configuration (proxy, engine order, timeouts, TLS) lives at
+Configuration (proxy, engine order, timeouts, cooldown, cache, TLS) lives at
 `~/.config/sought/config.toml`; `sought config --init` writes an annotated one.

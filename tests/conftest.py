@@ -53,6 +53,19 @@ class FakeSession:
         return self.response
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path_factory, monkeypatch):
+    """Point sought's state dir somewhere disposable, for every test.
+
+    Any test that runs the chain with a `rate_limited` stub would otherwise
+    write a real cooldown into ~/.cache/sought and hold back the user's next
+    real search — and leave state behind that makes the next test run differ.
+    """
+    root = tmp_path_factory.mktemp("xdg-cache")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(root))
+    return root / "sought"
+
+
 @pytest.fixture(scope="session")
 def saved():
     """Read a saved upstream response out of tests/fixtures."""

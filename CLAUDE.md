@@ -97,6 +97,7 @@ src/sought/
   config.py      ~/.config/sought/config.toml
   doctor.py      self-check; required failure ⇒ non-zero exit
   net.py         requests session with truststore + proxy
+  state.py       ~/.cache/sought: per-engine cooldowns, short-lived result cache
   skill.py       dual-branch skill lookup
   errors.py      exceptions carrying their exit code
   output.py      JSON and pretty rendering

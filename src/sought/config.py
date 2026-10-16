@@ -20,6 +20,8 @@ CONFIG_PATH = CONFIG_DIR / "config.toml"
 DEFAULT_ORDER = ("brave", "startpage", "marginalia")
 DEFAULT_TIMEOUT = 30
 DEFAULT_LIMIT = 10
+DEFAULT_COOLDOWN = 600
+DEFAULT_CACHE_TTL = 900
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # sought configuration — https://github.com/Ansarac/sought
@@ -41,6 +43,20 @@ order = ["brave", "startpage", "marginalia"]
 timeout_seconds = 30
 # Maximum results returned per query.
 limit = 10
+# After an engine answers `rate_limited`, leave it alone for this long. Asking
+# again seconds after a refusal does not get an answer; on a shared egress IP
+# it prolongs the ban. Skipped engines still appear in the audit trail, as
+# `rate_limited` with "cooling down ... not asked this time". 0 disables.
+# `sought config --clear-state` ends every cooldown early.
+cooldown_seconds = 600
+
+[cache]
+# Replay an identical search (same query, source, order and limit) from a
+# local cache for this long instead of asking the engines again. Only searches
+# that returned results are cached, and a replay carries
+# `"cached": {"age_seconds": N}` so it is never mistaken for a fresh search.
+# `--fresh` skips the lookup for one search. 0 disables.
+ttl_seconds = 900
 
 [tls]
 # Verify against the OS trust store instead of certifi's static bundle. Behind
@@ -121,6 +137,8 @@ class Config:
     order: tuple[str, ...] = DEFAULT_ORDER
     timeout_seconds: int = DEFAULT_TIMEOUT
     limit: int = DEFAULT_LIMIT
+    cooldown_seconds: int = DEFAULT_COOLDOWN
+    cache_ttl_seconds: int = DEFAULT_CACHE_TTL
     system_trust: bool = True
     browser_ignore_cert_errors: bool = False
     source_path: Path | None = None
@@ -159,6 +177,7 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
     proxy_raw = _table(raw, "proxy", path)
     engines_raw = _table(raw, "engines", path)
     tls_raw = _table(raw, "tls", path)
+    cache_raw = _table(raw, "cache", path)
 
     order = tuple(_str_list(engines_raw.get("order", DEFAULT_ORDER), "engines.order", path))
     if not order:
@@ -178,6 +197,16 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
             path,
         ),
         limit=positive_int(engines_raw.get("limit", DEFAULT_LIMIT), "engines.limit", path),
+        cooldown_seconds=_non_negative_int(
+            engines_raw.get("cooldown_seconds", DEFAULT_COOLDOWN),
+            "engines.cooldown_seconds",
+            path,
+        ),
+        cache_ttl_seconds=_non_negative_int(
+            cache_raw.get("ttl_seconds", DEFAULT_CACHE_TTL),
+            "cache.ttl_seconds",
+            path,
+        ),
         system_trust=_bool(tls_raw.get("system_trust", True), "tls.system_trust", path),
         browser_ignore_cert_errors=_bool(
             tls_raw.get("browser_ignore_cert_errors", False),
@@ -215,6 +244,19 @@ def positive_int(value: object, key: str, path: Path | None = None) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         where = f"{path}: " if path is not None else ""
         msg = f"{where}{key} must be a positive integer"
+        raise ConfigError(msg)
+    return value
+
+
+def _non_negative_int(value: object, key: str, path: Path | None) -> int:
+    """Validate a duration where 0 is meaningful: it switches the feature off.
+
+    Kept apart from `positive_int` on purpose. Zero is a valid cooldown or
+    cache lifetime and an invalid limit or timeout, and loosening the shared
+    validator would let `--limit 0` back in.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        msg = f"{path}: {key} must be a non-negative integer (0 disables)"
         raise ConfigError(msg)
     return value
 

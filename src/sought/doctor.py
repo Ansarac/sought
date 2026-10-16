@@ -14,12 +14,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sought import config as config_mod
+from sought import state
 from sought.engines.base import BROWSER_ENGINES, GENERAL_ENGINES
 
 if TYPE_CHECKING:
     from sought.config import Config
+    from sought.state import Cooldown
 
 MIN_PYTHON = (3, 13)
+
+CLEAR_STATE = "sought config --clear-state"
 
 
 @dataclass
@@ -48,13 +52,21 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
     checks.extend(_config_checks(cfg))
     checks.extend(_proxy_checks(cfg))
 
+    # Read before probing, so the line reports the state doctor found rather
+    # than one its own probes may have just changed, and so the probes can
+    # refer to it instead of repeating it.
+    cooling = state.active_cooldowns(config=cfg)
+    note = _cooldown_note(cooling)
+    if note is not None:
+        checks.append(note)
+
     # Probe first, report after: whether browser TLS is worth mentioning
     # depends on whether the browser engines are actually failing on a
     # certificate, and the probes are the only thing that knows.
     if offline:
         probes = [Check("engines", ok=True, detail="skipped (--offline)", required=False)]
     else:
-        probes = _engine_probes(cfg, chromium_ok=chromium.ok)
+        probes = _engine_probes(cfg, chromium_ok=chromium.ok, cooling=cooling)
 
     tls = _tls_note(cfg, probes=probes)
     if tls is not None:
@@ -232,6 +244,24 @@ def _cert_failures(probes: list[Check]) -> list[str]:
     ]
 
 
+def _cooldown_note(cooling: list[Cooldown]) -> Check | None:
+    """Report engines that searches are skipping right now — and nothing when there are none.
+
+    Silence when nothing is cooling down (or cooldowns are off) follows
+    `_tls_note`: a `✓ cooldowns: none` on every healthy run is a line people
+    learn to skip, and then they skip it on the run where it matters.
+
+    A warning, never required. A cooldown is sought holding back on purpose,
+    not a broken install, and it ends on its own. The clear command is named
+    because the usual reason to read this line is having just fixed the
+    network and wanting to know why searches still skip an engine.
+    """
+    if not cooling:
+        return None
+    engines = ", ".join(c.describe() for c in cooling)
+    return Check("cooldowns", ok=False, detail=f"{engines}; clear with: {CLEAR_STATE}", required=False)
+
+
 def _proxy_checks(cfg: Config) -> list[Check]:
     import os
 
@@ -277,20 +307,36 @@ def _redact(url: str) -> str:
     return f"{scheme}://***@{host}" if sep else f"***@{host}"
 
 
-def _engine_probes(cfg: Config, *, chromium_ok: bool) -> list[Check]:
-    """Ask each configured engine one cheap real query."""
+def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -> list[Check]:
+    """Ask each configured engine one cheap real query.
+
+    An engine in `cooling` is not asked — a probe is a real request, and
+    asking a refusing engine early is what the cooldown prevents. Its line
+    points at the cooldowns line rather than repeating it.
+    """
     from sought.search import run as search_run
 
+    cooled = {c.engine for c in cooling}
     checks: list[Check] = []
     probed = 0
+    skipped_cooling: list[str] = []
     for name in cfg.order:
         if name not in GENERAL_ENGINES:
             continue
         if not chromium_ok and name in {"brave", "startpage"}:
             checks.append(Check(f"engine {name}", ok=False, detail="skipped: no chromium", required=False))
             continue
+        if name in cooled:
+            skipped_cooling.append(name)
+            checks.append(
+                Check(f"engine {name}", ok=False, detail="not probed: cooling down (see cooldowns)", required=False)
+            )
+            continue
         probed += 1
-        payload = search_run("sought self test", config=cfg, source=name)
+        # Never from the result cache: a replayed probe would report an engine
+        # as working without having asked it. Cooldowns still apply inside
+        # `run` too, should one have started since `cooling` was read.
+        payload = search_run("sought self test", config=cfg, source=name, cache="off")
         attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
         ok = attempt["status"] == "ok"
         detail = f"{attempt.get('count', 0)} results" if ok else f"{attempt['status']} — {attempt.get('detail', '')}"
@@ -301,6 +347,28 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool) -> list[Check]:
     # Only meaningful once something was actually asked. Reporting "every
     # engine failed" for engines that were skipped would blame the wrong thing;
     # the missing-chromium check has already failed the run in that case.
-    if probed and not any(c.ok for c in checks):
-        checks.append(Check("engine chain", ok=False, detail="every configured engine failed"))
+    #
+    # Engines skipped for a cooldown do count: a search right now would get
+    # nothing from them either, so the run fails exactly as `sought <query>`
+    # would. But the detail has to say so — the likeliest reader has just
+    # fixed their network, and "every engine failed" would tell them the fix
+    # did not work when nothing was asked.
+    if (probed or skipped_cooling) and not any(c.ok for c in checks):
+        checks.append(Check("engine chain", ok=False, detail=_chain_failure(probed=probed, cooling=skipped_cooling)))
     return checks
+
+
+def _chain_failure(*, probed: int, cooling: list[str]) -> str:
+    if not cooling:
+        return "every configured engine failed"
+    names = ", ".join(cooling)
+    if not probed:
+        return (
+            f"every configured engine is cooling down after a rate limit ({names}), so none was asked and "
+            f"searches will fail until one cooldown ends. If the cause is fixed, run `{CLEAR_STATE}` "
+            "and doctor again"
+        )
+    return (
+        f"every configured engine failed or is cooling down ({names} not asked). If the cause is fixed, "
+        f"run `{CLEAR_STATE}` and doctor again"
+    )

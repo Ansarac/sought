@@ -203,3 +203,128 @@ def test_a_quoted_query_starting_with_a_subcommand_word_reaches_search(fake_sear
     # The search path emits the JSON envelope; `doctor` emits a check report.
     assert cli.main(["doctor who"]) == 0
     assert "attempts" in json.loads(capsys.readouterr().out)
+
+
+def _capture_run(monkeypatch, payload):
+    import sought.search
+
+    seen = {}
+
+    def run(*a, **k):
+        seen.update(k)
+        return payload
+
+    monkeypatch.setattr(sought.search, "run", run)
+    return seen
+
+
+def test_a_plain_search_uses_the_cache(fake_search, monkeypatch):
+    seen = _capture_run(monkeypatch, fake_search)
+    assert cli.main(["hello"]) == 0
+    assert seen["cache"] == "use"
+
+
+def test_fresh_skips_the_cache_lookup(fake_search, monkeypatch):
+    seen = _capture_run(monkeypatch, fake_search)
+    assert cli.main(["hello", "--fresh"]) == 0
+    assert seen["cache"] == "refresh"
+
+
+def test_the_fresh_help_says_cooldowns_still_apply(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--fresh" in out
+    assert "cooling down" in out
+
+
+def test_a_cached_replay_is_labelled_in_pretty_output(fake_search, capsys):
+    fake_search["cached"] = {"age_seconds": 200}
+    assert cli.main(["hello", "--pretty"]) == 0
+    assert "(cached, 3m old — use --fresh to search again)" in capsys.readouterr().out
+
+
+def test_every_engine_cooling_down_exits_two_like_a_live_refusal(monkeypatch, capsys):
+    """A cooldown skip is `rate_limited`: sought did not get an answer, so it is not exit 1."""
+    import sought.search
+    from sought import state
+    from sought.engines.base import Attempt
+
+    monkeypatch.setattr(cli, "_load_config", lambda **k: Config(order=("marginalia",)))  # noqa: ARG005
+    monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": lambda *a, **k: pytest.fail("cooling down")})  # noqa: ARG005
+    state.note_outcome(Attempt("marginalia", "rate_limited", "HTTP 429"), config=Config())
+
+    assert cli.main(["hello"]) == 2
+    err = capsys.readouterr().err
+    assert "marginalia=rate_limited" in err
+
+
+def test_the_fresh_help_names_the_way_to_end_a_cooldown(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "sought config --clear-state" in " ".join(capsys.readouterr().out.split())
+
+
+def _seed_state():
+    from sought import state
+    from sought.engines.base import Attempt
+
+    state.note_outcome(Attempt("brave", "rate_limited", "HTTP 429"), config=Config())
+    state.note_outcome(Attempt("marginalia", "rate_limited", "HTTP 429"), config=Config())
+    for query in ("one", "two"):
+        key = state.result_key(query, source=None, order=Config().order, limit=Config().limit)
+        state.store_result(key, {"results": [{"title": "x"}], "attempts": [{"engine": "brave"}]}, ttl=900)
+
+
+def test_clear_state_says_what_it_removed(isolated_cache, capsys):
+    _seed_state()
+    assert cli.main(["config", "--clear-state"]) == 0
+    out = capsys.readouterr().out
+    assert out == f"cleared: 2 cooldowns (brave, marginalia), 2 cached results — {isolated_cache}\n"
+
+
+def test_clear_state_with_nothing_there_says_so_and_succeeds(isolated_cache, capsys):
+    assert cli.main(["config", "--clear-state"]) == 0
+    assert capsys.readouterr().out == f"nothing to clear — {isolated_cache}\n"
+
+
+def test_clear_state_reports_an_unremovable_file_and_exits_two(isolated_cache, monkeypatch, capsys):
+    """A cooldown that is still there keeps an engine skipped; a script must be able to tell."""
+    from sought import state
+
+    _seed_state()
+    stuck = isolated_cache / state.COOLDOWN_FILE
+    real_unlink = type(stuck).unlink
+
+    def unlink(self, *a, **k):
+        if self == stuck:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(type(stuck), "unlink", unlink)
+
+    assert cli.main(["config", "--clear-state"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == f"cleared: 2 cached results — {isolated_cache}\n"
+    assert f"could not remove {stuck}: Permission denied" in captured.err
+
+
+def test_clear_state_works_with_a_broken_config_file(isolated_cache, monkeypatch, capsys):
+    """A config error must not stand between the user and unblocking their engines."""
+    from sought import config as config_mod
+    from sought.errors import ConfigError
+
+    def broken():
+        raise ConfigError("bad toml")
+
+    monkeypatch.setattr(config_mod, "load", broken)
+    assert cli.main(["config", "--clear-state"]) == 0
+
+
+@pytest.mark.parametrize("other", ["--init", "--path"])
+def test_clear_state_does_not_combine_with_other_config_actions(other, capsys):
+    """Doing one of two requested things and exiting 0 is a quiet partial success."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["config", "--clear-state", other])
+    assert exc.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
