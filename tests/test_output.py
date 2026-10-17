@@ -122,3 +122,47 @@ def test_an_ok_attempt_shows_its_detail(capsys):
         )
     )
     assert "✓ startpage: 2 results — passed proof-of-work challenge in 39s" in capsys.readouterr().out
+
+
+def test_the_low_relevance_warning_states_what_was_measured(capsys):
+    """The old line said no result mentioned any query term — false whenever a title held one."""
+    report = {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
+    print_pretty(_payload(low_relevance=True, relevance=report))
+    out = capsys.readouterr().out
+    assert (
+        "!! LOW RELEVANCE: the best result covers only 38% of the query's terms, weighted by length "
+        "(matched: berkshire; missing from every result: abel, earnings)."
+    ) in out
+    assert "Either these results only touch part of the query, or the engine served decoys." in out
+    assert "no result mentions" not in out
+
+
+def test_a_report_with_empty_lists_says_none(capsys):
+    print_pretty(_payload(low_relevance=True, relevance={"best_coverage": 0.0, "matched": [], "missing": []}))
+    out = capsys.readouterr().out
+    assert (
+        "covers only 0% of the query's terms, weighted by length (matched: none; missing from every result: none)."
+        in out
+    )
+
+
+def test_a_flag_without_numbers_still_gets_a_true_sentence(capsys):
+    """A payload from before `relevance` existed, or built by hand, must not fall back to the old claim."""
+    payload = _payload(low_relevance=True)
+    del payload["relevance"]
+    print_pretty(payload)
+    out = capsys.readouterr().out
+    assert "!! LOW RELEVANCE: even the best result covers less than half of the query's terms." in out
+    assert "no result mentions" not in out
+
+
+def test_no_warning_when_not_flagged(capsys):
+    print_pretty(_payload())
+    assert "LOW RELEVANCE" not in capsys.readouterr().out
+
+
+def test_relevance_is_null_unless_given():
+    assert _payload()["relevance"] is None
+    report = {"best_coverage": 0.2, "matched": [], "missing": ["x"]}
+    out = envelope(query="q", engine=None, attempts=[], results=[], low_relevance=True, relevance=report)
+    assert out["relevance"] == report

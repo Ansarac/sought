@@ -43,6 +43,7 @@ JSON is the default because the envelope matters:
     {"engine": "startpage", "status": "ok", "count": 8}
   ],
   "low_relevance": false,
+  "relevance": null,
   "results": [{"title": "...", "url": "...", "snippet": "..."}]
 }
 ```
@@ -51,10 +52,31 @@ JSON is the default because the envelope matters:
 
 Check these fields before you trust the results.
 
-**`low_relevance: true`** — not one result mentions any significant word from
-the query. Treat the results as unverified. Either the engine is serving
-decoys, or the query was too abstract. Re-run with `--source startpage` or
-reword before quoting anything.
+**`low_relevance: true`** — even the *best single* result covers less than
+half of the query's significant words (weighted by length, so a rare word
+counts for more; a word found only in the URL counts partly). It does not mean
+nothing matched: a flagged result may well contain some query words. The check
+is biased toward flagging on purpose — a needless warning costs a second look,
+a missed decoy page costs a wrong answer — so read it as "verify", not as
+"discard".
+
+`relevance` says what the check saw. `null` when not flagged; when flagged:
+
+```json
+"relevance": {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
+```
+
+`best_coverage` is the best result's score (the flag is raised below 0.5),
+`matched` the query words that result mentions in its title or snippet, and
+`missing` the words *no* result mentions. Results that share the query's
+subject but miss its rarer words mean the query is narrower than what was
+found: skim them, or reword. Results that match nothing, or only stopword-ish
+filler, are what a decoy page looks like: re-run with `--source startpage` or
+another engine before quoting anything.
+
+For `--source news`, titles are short and the snippet is only the publisher
+and the date, so partial coverage is normal and the flag is common. Look at
+`matched` / `missing` and the titles rather than throwing the results away.
 
 **`attempts`** — every engine consulted, in order, whether or not it worked.
 An empty `results` list with a populated `attempts` list is a real answer:
@@ -111,7 +133,7 @@ says nothing about the next. Take this default for open-ended questions.
 
 With `--source`, that one source is asked and there is no fallback. Prefer a
 vertical when the question has an obvious home — the answer is exact, it costs
-about a second, and it is not affected by any bot wall.
+about a second (`news` a few), and it is not affected by any bot wall.
 
 | `--source` | reach for it when |
 |---|---|
@@ -126,6 +148,17 @@ about a second, and it is not affected by any bot wall.
 `startpage` reaches the Google index. `marginalia` is an independent crawl that
 favours small, non-commercial, technical sites — better for essays and
 documentation, weaker for anything commercial.
+
+**`news` results** have the publisher and the date as their snippet
+(`CNBC · Sat, 08 Aug 2026 07:00:00 GMT`) and, normally, the publisher's own
+article URL. Google News only hands out `https://news.google.com/rss/articles/...`
+redirect links, which you cannot fetch (they answer with a JavaScript page);
+sought decodes them through an undocumented Google News endpoint. Any it could
+not decode stay as redirect links and the `ok` attempt's detail says how many,
+e.g. `3 of 10 article URLs left as news.google.com redirects` — and why, if
+Google News started refusing part-way. Do not WebFetch those; search for the
+title instead. Decoding is two extra requests per result, so `news` takes a
+few seconds rather than one (measured: about 8 s for 10 results).
 
 ### `google` (opt-in, usually off)
 

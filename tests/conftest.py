@@ -13,11 +13,67 @@ on the import path.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class NetworkUseInTestsError(RuntimeError):
+    """A test reached for the real network or a real browser."""
+
+
+def pytest_configure(config):
+    """Make the network and a real Chromium unreachable for the whole run.
+
+    The rule above used to be a convention, and conventions leak: a test that
+    called `monkeypatch.undo()` also undid its engine stubs, and a real chain
+    search went out through the proxy and wrote into the user's real cache.
+    Installed here, at configure time, rather than through `monkeypatch`, so
+    that undoing a test's patches restores these guards — never the real thing.
+
+    Every TCP connect is refused, loopback included: the developer's
+    `HTTPS_PROXY` points at localhost, so a leaked request's first hop is a
+    loopback connection. Unix sockets stay open; nothing here uses them for the
+    network. `sync_playwright` is replaced as well, because Chromium is a
+    separate process the socket guard cannot see; the browser tests' fake
+    driver is patched over it per test, as before.
+    """
+    import socket
+
+    import playwright.sync_api
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def refuse(sock: socket.socket, address: object) -> None:
+        if sock.family != socket.AF_UNIX:
+            msg = f"test tried to open a network connection to {address!r}; use a fake session"
+            raise NetworkUseInTestsError(msg)
+
+    def connect(sock: socket.socket, address: object) -> None:
+        refuse(sock, address)
+        real_connect(sock, address)
+
+    def connect_ex(sock: socket.socket, address: object) -> int:
+        refuse(sock, address)
+        return real_connect_ex(sock, address)
+
+    def no_browser() -> None:
+        msg = "test tried to start a real Playwright driver; use the `playwright` fake"
+        raise NetworkUseInTestsError(msg)
+
+    socket.socket.connect = connect
+    socket.socket.connect_ex = connect_ex
+    playwright.sync_api.sync_playwright = no_browser
+
+    # Same reasoning for state: `isolated_cache` redirects it per test, but an
+    # undone monkeypatch fell back to the real ~/.cache/sought. Point the
+    # process-wide default somewhere disposable too.
+    os.environ["XDG_CACHE_HOME"] = tempfile.mkdtemp(prefix="sought-tests-cache-")
 
 
 class FakeResponse:

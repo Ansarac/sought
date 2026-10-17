@@ -33,7 +33,8 @@ relevance score of 0.38. A number next to a wrong answer is worse than no
 number.
 
 So sought uses a real browser where one is required, keeps a full audit trail
-of every engine it consulted, and flags results that do not mention the query.
+of every engine it consulted, and flags results whose best match still covers
+too little of the query.
 
 ## Install
 
@@ -78,6 +79,7 @@ Output is JSON by default because the envelope carries the audit trail:
     {"engine": "startpage", "status": "ok", "count": 8}
   ],
   "low_relevance": false,
+  "relevance": null,
   "results": [{"title": "...", "url": "...", "snippet": "..."}]
 }
 ```
@@ -162,6 +164,27 @@ positives — a spurious warning costs a second glance, a missed one costs a
 wrong answer. A query of pure nonsense is always flagged, whatever the engine
 returns.
 
+A flag comes with its numbers, so it can be judged rather than obeyed:
+
+```json
+"low_relevance": true,
+"relevance": {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
+```
+
+`best_coverage` is the best result's score (flagged below 0.5), `matched` the
+query tokens that result mentions in its title or snippet, `missing` the
+tokens no result mentions. `relevance` is `null` when nothing is flagged.
+`--pretty` prints the same:
+
+```
+!! LOW RELEVANCE: the best result covers only 38% of the query's terms, weighted by length (matched: berkshire; missing from every result: abel, earnings).
+!! Either these results only touch part of the query, or the engine served decoys. Verify before trusting.
+```
+
+A flagged result can therefore still contain query words — the check is
+about coverage, not about any mention. That is common for `news`, whose
+titles are short.
+
 ### Exit codes
 
 `0` results · `1` searched fine, found nothing · `2` every source failed ·
@@ -191,6 +214,17 @@ silently swapped for something else.
 
 `pypi` resolves an exact package name only — PyPI removed its full-text search
 API, and sought says so rather than returning nothing.
+
+`news` searches the Google News RSS feed, whose links are
+`news.google.com/rss/articles/...` redirects that only a browser running
+JavaScript can follow. sought decodes each one to the publisher's URL through
+the same undocumented endpoint Google News' own page calls — two requests to
+news.google.com per result, best effort. A link it cannot decode stays a
+redirect, and the `ok` attempt says how many did (`3 of 10 article URLs left
+as news.google.com redirects`); a 429 or a bot wall stops the decoding for the
+rest of that search rather than asking again. That makes `news` the one
+vertical that takes a few seconds rather than one: about 8 s for 10 results,
+measured.
 
 ## Google (opt-in)
 

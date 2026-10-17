@@ -19,18 +19,22 @@ _STATUS_HINT = {
 }
 
 
-def envelope(
+def envelope(  # noqa: PLR0913 — keyword-only, one per envelope field
     *,
     query: str,
     engine: str | None,
     attempts: list[Attempt],
     results: list[Result],
     low_relevance: bool,
+    relevance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the audit envelope returned by every search.
 
     `cached` is always present so the shape never changes: `null` for a search
     that just happened, `{"age_seconds": N}` when `sought.state` replays one.
+    `relevance` likewise: `null` unless `low_relevance` is set, then the
+    numbers behind it (see `sought.engines.base.relevance_report`), so that a
+    reader can judge the flag instead of only obeying it.
     """
     return {
         "query": query,
@@ -38,6 +42,7 @@ def envelope(
         "cached": None,
         "attempts": [a.as_dict() for a in attempts],
         "low_relevance": low_relevance,
+        "relevance": relevance,
         "results": [r.as_dict() for r in results],
     }
 
@@ -69,8 +74,13 @@ def print_pretty(payload: dict[str, Any]) -> None:
     print()
 
     if payload["low_relevance"]:
-        print("!! LOW RELEVANCE: no result mentions any query term.")
-        print("!! This engine may be serving decoy results. Verify before trusting.")
+        print(f"!! LOW RELEVANCE: {_relevance_summary(payload.get('relevance'))}")
+        # One possibility among two, not a verdict: the check cannot tell a
+        # decoy page from a query more specific than what the web has.
+        print(
+            "!! Either these results only touch part of the query, or the engine served decoys. "
+            "Verify before trusting."
+        )
         print()
 
     results = payload["results"]
@@ -86,6 +96,24 @@ def print_pretty(payload: dict[str, Any]) -> None:
         print()
 
     print(f"— {len(results)} results via {payload['engine']}")
+
+
+def _relevance_summary(report: dict[str, Any] | None) -> str:
+    """Describe what the relevance check measured, in terms that are true of it.
+
+    It used to say "no result mentions any query term", which is not what is
+    checked, and was visibly false whenever a flagged result's title held a
+    query word. A payload without the numbers still gets an accurate sentence.
+    """
+    if not report:
+        return "even the best result covers less than half of the query's terms."
+    coverage = round(report.get("best_coverage", 0) * 100)
+    matched = ", ".join(report.get("matched") or []) or "none"
+    missing = ", ".join(report.get("missing") or []) or "none"
+    return (
+        f"the best result covers only {coverage}% of the query's terms, weighted by length "
+        f"(matched: {matched}; missing from every result: {missing})."
+    )
 
 
 def _age(seconds: int) -> str:

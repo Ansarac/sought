@@ -318,11 +318,37 @@ def test_a_repeat_search_is_replayed_and_labelled(engines, clock):
 
 
 def test_the_envelope_shape_is_stable(engines):
-    """`cached` is always present, so consumers never have to probe for it."""
+    """`cached` and `relevance` are always present, so consumers never have to probe for them."""
     _calls, behaviour = engines
     behaviour["brave"] = HIT
     out = search_mod.run("q", config=Config())
-    assert list(out) == ["query", "engine", "cached", "attempts", "low_relevance", "results"]
+    assert list(out) == ["query", "engine", "cached", "attempts", "low_relevance", "relevance", "results"]
+    assert out["relevance"] is None
+
+
+def test_a_replay_keeps_the_shape(engines, clock):
+    _calls, behaviour = engines
+    behaviour["brave"] = HIT
+    search_mod.run("playwright", config=Config())
+    clock(5)
+    replay = search_mod.run("playwright", config=Config())
+    assert replay["cached"] == {"age_seconds": 5}
+    assert list(replay) == ["query", "engine", "cached", "attempts", "low_relevance", "relevance", "results"]
+
+
+def test_entries_from_an_older_envelope_shape_are_misses(engines, monkeypatch):
+    """An entry written before `relevance` existed must not be replayed without it."""
+    calls, behaviour = engines
+    behaviour["brave"] = HIT
+    current = state._CACHE_FORMAT  # noqa: SLF001
+    monkeypatch.setattr(state, "_CACHE_FORMAT", current - 1)
+    search_mod.run("playwright", config=Config())
+    # Not `monkeypatch.undo()`: that would also undo the engine stubs and the
+    # isolated cache, and send the next search to the real network.
+    monkeypatch.setattr(state, "_CACHE_FORMAT", current)
+    calls.clear()
+    search_mod.run("playwright", config=Config())
+    assert calls == ["brave"]
 
 
 def test_a_search_without_results_is_never_cached(engines, isolated_cache):

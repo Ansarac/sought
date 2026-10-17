@@ -55,7 +55,8 @@ RESULTS_DIR = "results"
 
 # Part of every result-cache key, so a change to the stored envelope's shape
 # turns old entries into misses instead of replaying something stale.
-_CACHE_FORMAT = 1
+# 2: the envelope gained `relevance`.
+_CACHE_FORMAT = 2
 
 # Only the general engines are scraped, so only they can be hammered. A
 # vertical source that rate limits is a documented API saying "slow down" for
