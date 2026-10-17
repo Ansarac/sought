@@ -17,8 +17,11 @@ if TYPE_CHECKING:
     from sought.config import Config
 
 NAME = "brave"
-_RESULTS_CONTAINER = "#results"
-_ITEM = '#results .snippet[data-type="web"]'
+# Brave's results column was `#results`; since 2026-10 it is
+# `section#mixed-main`, beside an AI answer. Either one means the page is a
+# results page sought understands. The items themselves kept their markup.
+_RESULTS_CONTAINER = "#results, #mixed-main"
+_ITEM = '.snippet[data-type="web"]'
 
 # Runs inside the page. Each result node carries the title, href and snippet in
 # one of two class schemes depending on which layout Brave serves.

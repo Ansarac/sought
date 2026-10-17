@@ -104,10 +104,11 @@ def search(query: str, *, config: Config, browser: object | None = None) -> list
         try:
             goto(page, url, wait_for=_RESULTS, on_arrival=_check_url)
         except EngineFailure as exc:
-            if exc.status != "empty":
+            if exc.status != "error":
                 raise
-            # The results anchor never appeared. That is only `empty` if
-            # Google said so; see `_dead_page`.
+            # The results anchor never appeared and the page was no known
+            # wall (`goto` reports that as `error`). Google's own no-match
+            # page is the one case that is `empty`; see `_dead_page`.
             _check_url(page)
             raise _dead_page(extract(page, _SERIALIZE, None, timeout_ms=own.timeout_ms)) from exc
         _check_url(page)

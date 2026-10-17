@@ -316,12 +316,31 @@ def _classify_stuck_page(page: Any, *, challenge_wait_ms: int = 0) -> EngineFail
     own detail: "bot wall" alone would hide that sought gave it the full
     allowance, which is the difference between "raise the limit" and "this
     engine is refusing you".
+
+    A page that is neither a wall nor the expected layout is `error`, never
+    `empty`. A missing container means sought did not understand the page,
+    not that the engine found nothing — caught live when Brave replaced
+    `#results` and a page of nineteen results was reported as `empty`. An
+    engine's genuine "no results" renders its container and is recognised
+    there, by the engine.
     """
     body = _body_text(page)
     if challenge_wait_ms > 0 and POW_CHALLENGE_MARKER in body.lower():
         detail = f"proof-of-work challenge not completed within {challenge_wait_ms // 1000}s"
         return EngineFailure("rate_limited", detail)
-    return classify_dead_page(body, empty_detail="results container never rendered")
+    failure = classify_dead_page(body, empty_detail="")
+    if failure.status != "empty":
+        return failure
+    title = _title(page)
+    return EngineFailure("error", f"page not recognised: results container never rendered (title {title!r})")
+
+
+def _title(page: Any) -> str:  # noqa: ANN401 — Playwright page
+    """Read the document title for a diagnostic, or "" — diagnostics must not raise."""
+    try:
+        return str(page.title() or "")
+    except Exception:  # noqa: BLE001 — diagnostics must not raise
+        return ""
 
 
 def _shows_challenge(page: Any) -> bool:  # noqa: ANN401 — Playwright page
