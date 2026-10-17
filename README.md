@@ -192,6 +192,17 @@ silently swapped for something else.
 `pypi` resolves an exact package name only — PyPI removed its full-text search
 API, and sought says so rather than returning nothing.
 
+`news` searches the Google News RSS feed, whose links are
+`news.google.com/rss/articles/...` redirects that only a browser running
+JavaScript can follow. sought decodes each one to the publisher's URL through
+the same undocumented endpoint Google News' own page calls — two requests to
+news.google.com per result, best effort. A link it cannot decode stays a
+redirect, and the `ok` attempt says how many did (`3 of 10 article URLs left
+as news.google.com redirects`); a 429 or a bot wall stops the decoding for the
+rest of that search rather than asking again. That makes `news` the one
+vertical that takes a few seconds rather than one: about 8 s for 10 results,
+measured.
+
 ## Google (opt-in)
 
 There is a fourth general engine, `google`, and it is **off by default**. It

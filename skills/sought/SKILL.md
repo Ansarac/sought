@@ -111,7 +111,7 @@ says nothing about the next. Take this default for open-ended questions.
 
 With `--source`, that one source is asked and there is no fallback. Prefer a
 vertical when the question has an obvious home — the answer is exact, it costs
-about a second, and it is not affected by any bot wall.
+about a second (`news` a few), and it is not affected by any bot wall.
 
 | `--source` | reach for it when |
 |---|---|
@@ -126,6 +126,17 @@ about a second, and it is not affected by any bot wall.
 `startpage` reaches the Google index. `marginalia` is an independent crawl that
 favours small, non-commercial, technical sites — better for essays and
 documentation, weaker for anything commercial.
+
+**`news` results** have the publisher and the date as their snippet
+(`CNBC · Sat, 08 Aug 2026 07:00:00 GMT`) and, normally, the publisher's own
+article URL. Google News only hands out `https://news.google.com/rss/articles/...`
+redirect links, which you cannot fetch (they answer with a JavaScript page);
+sought decodes them through an undocumented Google News endpoint. Any it could
+not decode stay as redirect links and the `ok` attempt's detail says how many,
+e.g. `3 of 10 article URLs left as news.google.com redirects` — and why, if
+Google News started refusing part-way. Do not WebFetch those; search for the
+title instead. Decoding is two extra requests per result, so `news` takes a
+few seconds rather than one (measured: about 8 s for 10 results).
 
 ### `google` (opt-in, usually off)
 
