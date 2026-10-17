@@ -7,10 +7,10 @@ non-zero exit code. A green summary must mean the tool works.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sought import config as config_mod
@@ -111,54 +111,95 @@ def _playwright_package() -> Check:
 
 
 def _chromium(*, fix: bool) -> Check:
-    path = _chromium_path()
-    if path is not None:
-        return Check("chromium binary", ok=True, detail=path)
+    """Check that headless Chromium actually launches, installing it on `--fix`.
+
+    A launch, not a file check. Playwright 1.64 runs `headless=True` on a
+    separate binary, chromium-headless-shell, and `playwright install chromium`
+    no longer fetches it. Measured right after the 3.14 upgrade: this line said
+    ✓ for the full Chromium at `executable_path` while every browser engine
+    failed with "Executable doesn't exist … chrome-headless-shell". Launching
+    the way sought launches is the only check that cannot pass for the wrong
+    binary.
+    """
+    ok, detail = _launch_probe()
+    if ok:
+        return Check("chromium", ok=True, detail=detail)
 
     if not fix:
-        return Check(
-            "chromium binary",
-            ok=False,
-            detail="not found — run `sought doctor --fix` or `playwright install chromium`",
-        )
+        return Check("chromium", ok=False, detail=f"{detail} — run `sought doctor --fix` or `{_INSTALL_HINT}`")
 
-    print("installing chromium ...", flush=True)
-    result = subprocess.run(  # fixed argv, no shell
-        [sys.executable, "-m", "playwright", "install", "chromium"],
+    print("installing chromium-headless-shell ...", flush=True)
+    result = _run_child([sys.executable, "-m", "playwright", "install", *_INSTALL_TARGETS])
+    ok, detail = _launch_probe()
+    if ok:
+        return Check("chromium", ok=True, detail=f"{detail} (just installed)")
+    tail = (result.stderr or result.stdout or "").strip().splitlines()
+    reason = tail[-1] if result.returncode != 0 and tail else detail
+    return Check("chromium", ok=False, detail=f"install did not help: {reason}")
+
+
+# What sought launches: headless Chromium, which Playwright runs on the
+# separate headless-shell build. The full `chromium` build is never used.
+_INSTALL_TARGETS = ("chromium-headless-shell",)
+_INSTALL_HINT = f"playwright install {' '.join(_INSTALL_TARGETS)}"
+
+# Launch in a child process. Starting the Playwright driver in-process and
+# tearing it down leaves a pending asyncio task, which prints a
+# TargetClosedError traceback to stderr at exit. Muting stderr in a diagnostic
+# tool would be the wrong trade, so pay for a subprocess — doctor is not a hot
+# path. `--no-sandbox` matches `browser._launch_kwargs`; no proxy is needed,
+# because launching does not touch the network.
+_LAUNCH_PROBE = """
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    print(b.version)
+    b.close()
+"""
+_LAUNCH_TIMEOUT = 60
+
+
+def _run_child(argv: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a fixed Python child, speaking UTF-8 both ways.
+
+    The child writes UTF-8 and is read as UTF-8, anything undecodable
+    replaced. Otherwise it inherits a legacy code page (PYTHONIOENCODING, a
+    cp936 console), writes Playwright's box-drawing error banner in it, and
+    decoding that here raised UnicodeDecodeError out of doctor — caught by
+    tests/test_encoding.py when the launch probe first ran under cp936.
+    """
+    return subprocess.run(  # noqa: S603 — fixed argv built from sys.executable and constants, no shell
+        argv,
         check=False,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        timeout=timeout,
     )
-    path = _chromium_path()
-    if path is not None:
-        return Check("chromium binary", ok=True, detail=f"{path} (just installed)")
-    tail = (result.stderr or result.stdout or "").strip().splitlines()
-    return Check("chromium binary", ok=False, detail=f"install failed: {tail[-1] if tail else 'unknown error'}")
 
 
-# Read the browser path in a child process. Starting the Playwright driver
-# in-process only to read a path and then tearing it down leaves a pending
-# asyncio task, which prints a TargetClosedError traceback to stderr at exit.
-# Muting stderr in a diagnostic tool would be the wrong trade, so pay for a
-# subprocess instead — doctor is not a hot path.
-_PATH_PROBE = "from playwright.sync_api import sync_playwright as s\nwith s() as p: print(p.chromium.executable_path)"
-
-
-def _chromium_path() -> str | None:
+def _launch_probe() -> tuple[bool, str]:
+    """Launch headless Chromium once; return whether it worked and what to print."""
     try:
-        result = subprocess.run(  # noqa: S603 — fixed argv, no shell, no external input
-            [sys.executable, "-c", _PATH_PROBE],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError, subprocess.SubprocessError:
-        return None
-    if result.returncode != 0:
-        return None
-    path = result.stdout.strip()
-    return path if path and Path(path).exists() else None
+        result = _run_child([sys.executable, "-c", _LAUNCH_PROBE], timeout=_LAUNCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, f"headless launch did not finish within {_LAUNCH_TIMEOUT}s"
+    except OSError as exc:
+        return False, f"cannot run the launch probe: {exc}"
+
+    if result.returncode == 0 and result.stdout.strip():
+        return True, f"headless Chromium {result.stdout.strip().splitlines()[-1]} launches"
+    return False, f"headless launch failed: {_launch_error(result.stderr or result.stdout)}"
+
+
+def _launch_error(output: str) -> str:
+    """Pick the line that names the problem out of a Playwright traceback."""
+    lines = [line.strip() for line in output.strip().splitlines() if line.strip()]
+    for line in lines:
+        if "Executable doesn't exist" in line:
+            return line.removeprefix("playwright._impl._errors.Error: ")
+    return lines[-1] if lines else "no output"
 
 
 def _config_checks(cfg: Config) -> list[Check]:

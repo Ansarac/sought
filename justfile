@@ -4,7 +4,7 @@ default:
 # Install dependencies and the browser sought needs.
 setup:
     uv sync
-    uv run playwright install chromium
+    uv run playwright install chromium-headless-shell
 
 test:
     uv run pytest

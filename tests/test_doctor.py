@@ -667,3 +667,76 @@ def test_google_without_chromium_is_skipped_not_probed(monkeypatch):
 
     assert check is not None
     assert "skipped: no chromium" in check.detail
+
+
+# --- the chromium check launches, it does not look for a file -----------------
+
+
+class _Run:
+    """Stands in for `subprocess.run`, answering the launch probe and the installer in turn."""
+
+    def __init__(self, *answers) -> None:
+        self.answers = list(answers)
+        self.argvs: list[list[str]] = []
+
+    def __call__(self, argv, **_kwargs) -> object:
+        import subprocess
+
+        self.argvs.append(argv)
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        code, out, err = answer
+        return subprocess.CompletedProcess(argv, code, stdout=out, stderr=err)
+
+
+_MISSING_SHELL = (
+    "Traceback (most recent call last):\n"
+    "playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at "
+    "/home/u/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell\n"
+    "╔════╗\n║ Looks like Playwright was just installed or updated. ║\n╚════╝\n"
+)
+
+
+def test_a_chromium_that_launches_is_ok_and_says_its_version(monkeypatch):
+    monkeypatch.setattr(doctor.subprocess, "run", _Run((0, "156.0.8078.4\n", "")))
+    check = doctor._chromium(fix=False)  # noqa: SLF001
+    assert check.ok
+    assert check.detail == "headless Chromium 156.0.8078.4 launches"
+
+
+def test_a_missing_headless_shell_fails_even_if_full_chromium_exists(monkeypatch):
+    """The 3.14 upgrade: full Chromium installed, headless shell not, doctor said ✓."""
+    monkeypatch.setattr(doctor.subprocess, "run", _Run((1, "", _MISSING_SHELL)))
+    check = doctor._chromium(fix=False)  # noqa: SLF001
+    assert not check.ok
+    assert check.required
+    assert "chromium_headless_shell-1248" in check.detail
+    assert "playwright install chromium-headless-shell" in check.detail
+
+
+def test_fix_installs_the_headless_shell_and_launches_again(monkeypatch, capsys):
+    run = _Run((1, "", _MISSING_SHELL), (0, "downloaded", ""), (0, "156.0.8078.4\n", ""))
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    check = doctor._chromium(fix=True)  # noqa: SLF001
+    assert check.ok
+    assert check.detail.endswith("(just installed)")
+    assert run.argvs[1][-2:] == ["install", "chromium-headless-shell"]
+    assert "installing chromium-headless-shell" in capsys.readouterr().out
+
+
+def test_fix_that_does_not_help_says_why(monkeypatch):
+    run = _Run((1, "", _MISSING_SHELL), (1, "", "Error: download failed: ECONNRESET\n"), (1, "", _MISSING_SHELL))
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    check = doctor._chromium(fix=True)  # noqa: SLF001
+    assert not check.ok
+    assert check.detail == "install did not help: Error: download failed: ECONNRESET"
+
+
+def test_a_launch_that_hangs_is_a_failure_not_a_hang(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(doctor.subprocess, "run", _Run(subprocess.TimeoutExpired(["python"], 60)))
+    check = doctor._chromium(fix=False)  # noqa: SLF001
+    assert not check.ok
+    assert "did not finish within 60s" in check.detail
