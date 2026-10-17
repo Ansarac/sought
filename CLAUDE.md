@@ -71,7 +71,10 @@ automated-query policy. The repository owner decided to offer it anyway, as
 Measured with sought's own launch path, headless, flag hidden: three
 requests, three results pages. The organic links are `google.com/goto?url=<token>`
 encrypted redirects; the destination URL is nowhere in the page, scripts
-included. Pass the redirect on and say so (the `ok` detail does); never
+included. Measured: a cookieless GET to a token from another process got a
+302 to the real destination, so `google.resolve_redirects` resolves them (one
+request per result to `/goto`, redirects not followed, stops at `/sorry/`);
+any that fail stay as redirects and the `ok` detail counts them. Never
 reconstruct a URL from the breadcrumb. A client that runs no JavaScript gets
 an HTTP 200 shell with no results, so a Google page without results is
 `empty` only when it says "did not match any documents" — otherwise `error`.

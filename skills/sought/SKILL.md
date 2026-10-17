@@ -141,10 +141,11 @@ When google results do appear, read them like this:
 
 - The `ok` attempt's detail says `automation flag hidden (google.enabled)`.
   That is a disclosure, not an error; the results are real Google results.
-- Their URLs are `https://www.google.com/goto?url=...` redirects. Google no
-  longer puts the destination in the page. Fetching one is a request to
-  Google that redirects to the real page; the title and snippet usually tell
-  you whether it is worth that.
+- Their URLs are normally the real destinations: sought resolves Google's
+  `https://www.google.com/goto?url=...` redirects itself. Any it could not
+  resolve stay as `/goto` links (they still work, with one redirect hop), and
+  the detail says how many, e.g. `2 of 9 result URLs left as google.com/goto
+  redirects`.
 - `rate_limited` with `local budget 20/h used, next slot at 14:32 — not
   asked` means sought held itself back under the user's hourly limit; Google
   was not asked. Like a cooldown, it is not a refusal, and retrying before

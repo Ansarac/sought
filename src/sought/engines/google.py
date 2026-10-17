@@ -21,13 +21,18 @@ it anyway, under four conditions this module exists to keep:
 Result links are `https://www.google.com/goto?url=<token>`. Measured on the
 captured pages: Google now serves organic links as an encrypted redirect
 token, and the destination URL appears nowhere in the page, scripts included.
-They are passed on as they are — guessing the destination from the breadcrumb
-would be inventing a URL — and the `ok` detail says so.
+Guessing it from the breadcrumb would be inventing a URL, so each token is
+resolved instead: one plain GET per result, redirects not followed, reading
+the 302's `Location`. Measured: a cookieless client from another process got
+the real destination for every token it tried. That is up to `limit` extra
+requests to `/goto` (never to `/search`) per search; they do not spend the
+budget, which bounds searches. A token that does not resolve stays as it is,
+and the `ok` detail counts how many did not.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote_plus, urljoin, urlsplit
@@ -47,7 +52,10 @@ DISABLED_DETAIL = f"disabled — google is opt-in; {ENABLE_HINT} (see `sought co
 
 # Disclosed on every `ok`: these results were obtained with a spoofed signal.
 EVASION_DETAIL = "automation flag hidden (google.enabled)"
-GOTO_NOTE = "result URLs are google.com/goto redirects; the destination is not in the page"
+GOTO_PREFIX = f"{BASE}goto?"
+# Short: a redirect answer is a header, and a slow one is not worth holding
+# the whole search for — the unresolved link still works for whoever opens it.
+_RESOLVE_TIMEOUT = 5
 
 # Organic results are `a h3` inside #search (measured on three live pages).
 # Waiting on the anchor rather than on containers matters: Playwright judges
@@ -108,8 +116,51 @@ def search(query: str, *, config: Config, browser: object | None = None) -> list
     results = parse(html)[: config.limit]
     if not results:
         raise _dead_page(html)
-    redirects = any(r.url.startswith(f"{BASE}goto?") for r in results)
-    return ResultList(results, detail=f"{EVASION_DETAIL}; {GOTO_NOTE}" if redirects else EVASION_DETAIL)
+    results, unresolved = resolve_redirects(results, config=config)
+    detail = EVASION_DETAIL
+    if unresolved:
+        detail += f"; {unresolved} of {len(results)} result URLs left as google.com/goto redirects"
+    return ResultList(results, detail=detail)
+
+
+def resolve_redirects(results: list[Result], *, config: Config) -> tuple[list[Result], int]:
+    """Replace `/goto` tokens with the destinations Google redirects them to.
+
+    Returns the results and how many tokens stayed unresolved. Best effort by
+    design: each failure leaves that one link as a working redirect, which is
+    still a correct URL, just a worse one. A redirect to `/sorry/` stops the
+    pass — Google has started refusing, and asking it nine more times would be
+    exactly the load the budget and cooldowns exist to prevent.
+    """
+    pending = [r.url for r in results if r.url.startswith(GOTO_PREFIX)]
+    if not pending:
+        return results, 0
+
+    import requests
+
+    from sought import net
+
+    sess = net.session(config)
+    resolved: dict[str, str] = {}
+    for url in pending:
+        try:
+            resp = sess.get(url, allow_redirects=False, timeout=_RESOLVE_TIMEOUT, stream=True)
+            resp.close()
+        except requests.RequestException:
+            continue
+        target = resp.headers.get("Location", "")
+        if "/sorry/" in target:
+            break
+        if _is_destination(target):
+            resolved[url] = target
+    return [replace(r, url=resolved.get(r.url, r.url)) for r in results], len(pending) - len(resolved)
+
+
+def _is_destination(url: str) -> bool:
+    """Accept only an absolute http(s) URL off Google; anything else is not the result's destination."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    return parts.scheme in {"http", "https"} and not (host == "google.com" or host.endswith(".google.com"))
 
 
 def _check_url(page: object) -> None:

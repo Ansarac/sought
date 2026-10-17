@@ -247,11 +247,14 @@ What changes when it is on, and what does not:
   exactly as before, and google's Chromium is launched only when google is
   actually asked (enabled, not cooling down, within budget).
 - Every answer says what was done:
-  `{"engine": "google", "status": "ok", "count": 9, "detail": "automation flag hidden (google.enabled); result URLs are google.com/goto redirects; ..."}`.
-- **Result links are Google redirects.** Google now serves organic results as
+  `{"engine": "google", "status": "ok", "count": 9, "detail": "automation flag hidden (google.enabled)"}`.
+- **Result links are resolved for you.** Google now serves organic results as
   `https://www.google.com/goto?url=<token>`, an encrypted token; the
-  destination URL is nowhere in the page. sought passes the link on as it is
-  rather than guessing. Following it is one more request to Google.
+  destination URL is nowhere in the page. sought asks each token where it
+  leads (one small request to `/goto` per result, never to `/search`, not
+  counted against the budget) and reports the real URL. A token that does not
+  resolve stays a working `/goto` link, and the detail says how many, e.g.
+  `…; 2 of 9 result URLs left as google.com/goto redirects`.
 - A Google page without results is `empty` only when Google says "did not
   match any documents". Anything else it did not recognise is `error`, never
   a claim that the web has no answer.

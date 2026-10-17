@@ -22,11 +22,53 @@ from sought import cli, state
 from sought import search as search_mod
 from sought.config import Config, GoogleConfig
 from sought.engines import google
-from sought.engines.base import EngineFailure
+from sought.engines.base import EngineFailure, Result
 
 T0 = 1_800_000_000.0
 ON = Config(google=GoogleConfig(enabled=True))
 GOTO = "https://www.google.com/goto?url="
+
+
+class FakeResponse:
+    def __init__(self, location: str) -> None:
+        self.headers = {"Location": location} if location else {}
+
+    def close(self) -> None:
+        pass
+
+
+class FakeRedirects:
+    """Stands in for `net.session` so resolving `/goto` tokens never touches the network.
+
+    `answers` maps a token URL to a Location (or an exception to raise); any
+    token not listed redirects to `https://dest.example/<n>`.
+    """
+
+    def __init__(self) -> None:
+        self.answers: dict[str, object] = {}
+        self.asked: list[str] = []
+        self.sessions = 0
+
+    def session(self, _config):
+        self.sessions += 1
+        return self
+
+    def get(self, url, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        self.asked.append(url)
+        answer = self.answers.get(url, f"https://dest.example/{len(self.asked)}")
+        if isinstance(answer, Exception):
+            raise answer
+        return FakeResponse(str(answer))
+
+
+@pytest.fixture(autouse=True)
+def redirects(monkeypatch):
+    from sought import net
+
+    fake = FakeRedirects()
+    monkeypatch.setattr(net, "session", fake.session)
+    return fake
 
 
 @pytest.fixture
@@ -333,18 +375,93 @@ def test_results_are_ok_with_the_evasion_disclosed(own_browser, saved, clock):
     [attempt] = out["attempts"]
     assert attempt["status"] == "ok"
     assert attempt["count"] == 9
-    assert attempt["detail"].startswith("automation flag hidden (google.enabled)")
-    assert "google.com/goto" in attempt["detail"]
+    assert attempt["detail"] == "automation flag hidden (google.enabled)"
+    assert all(r["url"].startswith("https://dest.example/") for r in out["results"])
     assert launches == [{"hide_automation": True}]
     assert state.budget("google", per_hour=20).used == 1
 
 
-def test_direct_links_get_no_redirect_note(own_browser, clock):
+def test_direct_links_get_no_redirect_note(own_browser, clock, redirects):
     own_browser(GooglePage(html=SYNTHETIC.replace('href="/goto?url=TOKEN&amp;ved=xyz"', 'href="https://e.example/"')))
 
     out = search_mod.run("q", config=ON, source="google")
 
     assert out["attempts"][0]["detail"] == "automation flag hidden (google.enabled)"
+    assert redirects.sessions == 0  # nothing to resolve, nothing asked
+
+
+# --- resolving /goto tokens -------------------------------------------------
+
+
+def _goto(n: int) -> Result:
+    return Result(title=f"t{n}", url=f"{GOTO}T{n}", snippet="")
+
+
+def test_tokens_are_resolved_to_their_destinations(redirects):
+    redirects.answers[f"{GOTO}T1"] = "https://docs.python.org/3/library/asyncio-task.html"
+
+    results, unresolved = google.resolve_redirects([_goto(1), _goto(2)], config=ON)
+
+    assert [r.url for r in results] == ["https://docs.python.org/3/library/asyncio-task.html", "https://dest.example/2"]
+    assert unresolved == 0
+
+
+def test_a_token_that_fails_stays_a_working_redirect_and_is_counted(redirects):
+    import requests
+
+    redirects.answers[f"{GOTO}T1"] = requests.ConnectionError("reset")
+    redirects.answers[f"{GOTO}T2"] = ""  # a 200, no Location
+
+    results, unresolved = google.resolve_redirects([_goto(1), _goto(2), _goto(3)], config=ON)
+
+    assert [r.url for r in results][:2] == [f"{GOTO}T1", f"{GOTO}T2"]
+    assert unresolved == 2
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["https://www.google.com/search?q=x", "https://google.com/", "/relative", "javascript:alert(1)"],
+)
+def test_a_redirect_back_into_google_or_nowhere_is_not_a_destination(redirects, location):
+    redirects.answers[f"{GOTO}T1"] = location
+
+    results, unresolved = google.resolve_redirects([_goto(1)], config=ON)
+
+    assert results[0].url == f"{GOTO}T1"
+    assert unresolved == 1
+
+
+def test_a_sorry_redirect_stops_resolving(redirects):
+    """Google has started refusing; asking it again per result is the load the budget prevents."""
+    redirects.answers[f"{GOTO}T1"] = "https://www.google.com/sorry/index?continue=x"
+
+    results, unresolved = google.resolve_redirects([_goto(1), _goto(2), _goto(3)], config=ON)
+
+    assert redirects.asked == [f"{GOTO}T1"]
+    assert unresolved == 3
+    assert all(r.url.startswith(GOTO) for r in results)
+
+
+def test_unresolved_tokens_are_disclosed_in_the_attempt(own_browser, saved, clock, redirects):
+    import requests
+
+    own_browser(GooglePage(html=saved("google_results.html")))
+    redirects.answers = {}
+    real_get = redirects.get
+
+    def flaky(url, **kwargs):
+        if len(redirects.asked) == 0:
+            redirects.asked.append(url)
+            raise requests.Timeout("slow")
+        return real_get(url, **kwargs)
+
+    redirects.get = flaky
+
+    out = search_mod.run("python asyncio taskgroup", config=ON, source="google")
+
+    assert out["attempts"][0]["detail"] == (
+        "automation flag hidden (google.enabled); 1 of 9 result URLs left as google.com/goto redirects"
+    )
 
 
 def test_the_url_and_hl_and_num_are_asked_for(own_browser, saved, clock):
