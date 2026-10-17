@@ -49,8 +49,11 @@ def pytest_configure(config):
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
 
+    # Not every platform's socket module has AF_UNIX; without it, nothing is exempt.
+    unix = getattr(socket, "AF_UNIX", None)
+
     def refuse(sock: socket.socket, address: object) -> None:
-        if sock.family != socket.AF_UNIX:
+        if unix is None or sock.family != unix:
             msg = f"test tried to open a network connection to {address!r}; use a fake session"
             raise NetworkUseInTestsError(msg)
 
