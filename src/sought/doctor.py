@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from sought.config import Config
     from sought.state import Budget, Cooldown
 
-MIN_PYTHON = (3, 13)
+MIN_PYTHON = (3, 14)
 
 CLEAR_STATE = "sought config --clear-state"
 
@@ -97,7 +97,7 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
 def _python() -> Check:
     v = sys.version_info
     ok = (v.major, v.minor) >= MIN_PYTHON
-    return Check("python", ok=ok, detail=f"{v.major}.{v.minor}.{v.micro}" + ("" if ok else " (need >= 3.13)"))
+    return Check("python", ok=ok, detail=f"{v.major}.{v.minor}.{v.micro}" + ("" if ok else " (need >= 3.14)"))
 
 
 def _playwright_package() -> Check:
@@ -153,7 +153,7 @@ def _chromium_path() -> str | None:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None

@@ -43,11 +43,11 @@ def _packaged(pkg: str) -> Path | None:
 
     try:
         candidate = files(pkg) / "_skill" / "SKILL.md"
-    except (ModuleNotFoundError, TypeError):
+    except ModuleNotFoundError, TypeError:
         return None
     try:
         path = Path(str(candidate))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return path if path.is_file() else None
 
