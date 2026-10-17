@@ -146,7 +146,7 @@ When google results do appear, read them like this:
   resolve stay as `/goto` links (they still work, with one redirect hop), and
   the detail says how many, e.g. `2 of 9 result URLs left as google.com/goto
   redirects`.
-- `rate_limited` with `local budget 20/h used, next slot at 14:32 — not
+- `rate_limited` with `local budget 100/h used, next slot at 14:32 — not
   asked` means sought held itself back under the user's hourly limit; Google
   was not asked. Like a cooldown, it is not a refusal, and retrying before
   that time gets the same answer. Use another engine.

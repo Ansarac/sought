@@ -211,9 +211,9 @@ today; Google can close the gap any day, and the engine will then report
 **The risk is not only yours.** Heavy automated use from one NAT or
 datacenter egress IP can make Google escalate from refusing one browser to
 blocking the IP — for everyone behind it. So the engine has a local budget,
-`max_per_hour` (default 20), a sliding hour checked before Chromium is even
+`max_per_hour` (default 100), a sliding hour checked before Chromium is even
 launched; once it is spent, google appears in the audit trail as
-`rate_limited` with `local budget 20/h used, next slot at 14:32 — not asked`.
+`rate_limited` with `local budget 100/h used, next slot at 14:32 — not asked`.
 A real `/sorry` page is `rate_limited` too, and starts the usual cooldown.
 `sought config --clear-state` does not reset the budget.
 
@@ -223,7 +223,7 @@ To use it, set `enabled = true` **and** either add `"google"` to
 ```toml
 [google]
 enabled = true
-max_per_hour = 20
+max_per_hour = 100
 
 [engines]
 order = ["brave", "startpage", "google", "marginalia"]   # optional
@@ -330,7 +330,7 @@ browser_ignore_cert_errors = false
 
 [google]                 # opt-in; see "Google (opt-in)" above before changing
 enabled = false
-max_per_hour = 20
+max_per_hour = 100
 ```
 
 Setting a proxy here passes it to both transports explicitly. Left empty, each
