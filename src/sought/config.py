@@ -23,7 +23,7 @@ DEFAULT_LIMIT = 10
 DEFAULT_COOLDOWN = 600
 DEFAULT_CACHE_TTL = 900
 DEFAULT_CHALLENGE_WAIT = 60
-DEFAULT_GOOGLE_BUDGET = 20
+DEFAULT_GOOGLE_BUDGET = 100
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # sought configuration — https://github.com/Ansarac/sought
@@ -105,8 +105,9 @@ browser_ignore_cert_errors = false
 # egress IP can make Google escalate from refusing one browser to blocking the
 # IP — for everyone behind it, colleagues included. That is why max_per_hour
 # exists: a local budget checked before Chromium is even launched (a skipped
-# request appears as `rate_limited` "... — not asked"). Keep it low. A
-# `rate_limited` from Google (its /sorry page) starts the usual cooldown.
+# request appears as `rate_limited` "... — not asked"). Lower it if many people
+# share your egress IP and all of them use this. A `rate_limited` from Google
+# (its /sorry page) starts the usual cooldown.
 #
 # To use it: set enabled = true, AND either add "google" to [engines] order
 # (it is not in the default order) or ask for it with `--source google`. Its
@@ -115,7 +116,7 @@ browser_ignore_cert_errors = false
 # sought resolves them to the real URLs (one small request per result to
 # /goto, not counted against the budget).
 enabled = false
-max_per_hour = 20
+max_per_hour = 100
 """
 
 

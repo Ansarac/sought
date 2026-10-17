@@ -209,7 +209,7 @@ class Budget:
         return max(self.limit - self.used, 0)
 
     def describe(self) -> str:
-        """`18/20 left this hour` — for doctor."""
+        """`98/100 left this hour` — for doctor."""
         return f"{self.remaining}/{self.limit} left this hour"
 
 

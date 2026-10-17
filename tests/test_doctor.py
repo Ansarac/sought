@@ -613,7 +613,9 @@ def test_enabled_google_offline_shows_the_budget_without_probing(green, monkeypa
 
     assert doctor.run(GOOGLE_ON, offline=True) == 0
     out = capsys.readouterr().out
-    assert "engine google: enabled (automation flag hidden), not probed (--offline); budget 20/20 left this hour" in out
+    assert (
+        "engine google: enabled (automation flag hidden), not probed (--offline); budget 100/100 left this hour" in out
+    )
 
 
 def test_enabled_google_outside_the_order_is_probed_and_says_what_it_cost(monkeypatch):
@@ -624,7 +626,7 @@ def test_enabled_google_outside_the_order_is_probed_and_says_what_it_cost(monkey
     assert check is not None
     assert check.ok is True
     assert "1 results — automation flag hidden (google.enabled)" in check.detail
-    assert "budget 19/20 left this hour (this probe used one)" in check.detail
+    assert "budget 99/100 left this hour (this probe used one)" in check.detail
     assert "not in engines.order" in check.detail
 
 

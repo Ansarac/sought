@@ -62,7 +62,7 @@ automated-query policy. The repository owner decided to offer it anyway, as
 - Off by default (`[google] enabled = false`) and never in `DEFAULT_ORDER`.
   Asked for while disabled, it records an `error` attempt naming the key to
   set; it is never skipped silently.
-- A local hourly budget (`google.max_per_hour`, default 20; `state.budget`)
+- A local hourly budget (`google.max_per_hour`, default 100; `state.budget`)
   is checked before Chromium launches, and a skip is `rate_limited` "... —
   not asked" that starts no cooldown. Heavy automated use from one shared NAT
   or datacenter IP can make Google block the IP for everyone behind it.

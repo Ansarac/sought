@@ -126,7 +126,7 @@ def test_the_written_default_parses_back_to_the_builtin_defaults(tmp_path):
 def test_google_is_off_by_default_and_not_in_the_default_order():
     cfg = Config()
     assert cfg.google.enabled is False
-    assert cfg.google.max_per_hour == 20
+    assert cfg.google.max_per_hour == 100
     assert "google" not in cfg.order
 
 
