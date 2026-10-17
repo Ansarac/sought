@@ -558,6 +558,73 @@ def test_google_in_the_chain_does_not_launch_the_shared_browser(own_browser, sav
     assert out["engine"] == "google"
 
 
+def test_google_after_the_browser_engines_gets_its_own_chromium_from_the_running_driver(
+    saved, clock, monkeypatch, isolated_cache
+):
+    """The order a user actually configures: brave and startpage first, google as a fallback.
+
+    Measured on a live search before the fix: brave 429, startpage challenge
+    timeout, then `google: error — cannot start a browser: ... Sync API inside
+    the asyncio loop`. Through the real `browser_session`, with a driver that,
+    like Playwright's, refuses a second start in the same thread.
+    """
+    import playwright.sync_api
+
+    from sought import browser as browser_mod
+
+    page = GooglePage(html=saved("google_results.html"))
+    starts: list[int] = []
+    running: list[int] = []
+    launches: list[list[str]] = []
+
+    class Ctx:
+        def set_default_timeout(self, _ms):
+            pass
+
+        def new_page(self):
+            return page
+
+        def close(self):
+            pass
+
+    class Chromium:
+        def launch(self, **kwargs):
+            launches.append(kwargs["args"])
+            return SimpleNamespace(new_context=lambda **_k: Ctx(), close=lambda: None)
+
+    class Driver:
+        def start(self):
+            if running:
+                msg = "It looks like you are using Playwright Sync API inside the asyncio loop."
+                raise RuntimeError(msg)
+            starts.append(1)
+            running.append(1)
+            return SimpleNamespace(chromium=Chromium(), stop=running.pop)
+
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", Driver)
+    page.close = lambda: None
+
+    def refused(query, *, config, browser):
+        raise EngineFailure("rate_limited", "HTTP 429")
+
+    monkeypatch.setitem(search_mod._GENERAL, "brave", refused)  # noqa: SLF001
+    monkeypatch.setitem(search_mod._GENERAL, "startpage", refused)  # noqa: SLF001
+    monkeypatch.setattr(google, "resolve_redirects", lambda results, *, config: (results, 0))  # noqa: ARG005
+
+    cfg = Config(order=("brave", "startpage", "google"), google=GoogleConfig(enabled=True))
+    out = search_mod.run("q", config=cfg, cache="off")
+
+    assert [(a["engine"], a["status"]) for a in out["attempts"]] == [
+        ("brave", "rate_limited"),
+        ("startpage", "rate_limited"),
+        ("google", "ok"),
+    ]
+    assert out["engine"] == "google"
+    assert starts == [1]
+    assert running == []
+    assert [browser_mod.HIDE_AUTOMATION_FLAG in args for args in launches] == [False, True]
+
+
 # --- the command line -------------------------------------------------------
 
 

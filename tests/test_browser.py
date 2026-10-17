@@ -398,6 +398,80 @@ def test_googles_launch_hides_the_flag_and_still_carries_the_explicit_proxy(play
     assert fake_browser.new_context_kwargs["ignore_https_errors"] is False
 
 
+class OnePerThreadDriver:
+    """Like the real sync API: a second `start()` while one is running raises."""
+
+    def __init__(self) -> None:
+        self.running = 0
+        self.starts = 0
+        self.launches: list[dict] = []
+
+    def start(self):
+        if self.running:
+            msg = "It looks like you are using Playwright Sync API inside the asyncio loop."
+            raise RuntimeError(msg)
+        self.running += 1
+        self.starts += 1
+        driver = self
+
+        class Chromium:
+            def launch(self, **kwargs):
+                driver.launches.append(kwargs)
+                return FakeBrowser(FakeContext())
+
+        class Pw:
+            chromium = Chromium()
+
+            def stop(self):
+                driver.running -= 1
+
+        return Pw()
+
+
+@pytest.fixture
+def one_driver(monkeypatch):
+    import playwright.sync_api
+
+    driver = OnePerThreadDriver()
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", lambda: driver)
+    return driver
+
+
+def test_googles_browser_starts_inside_the_chains_session(one_driver):
+    """The chain holds its session open while google launches its own Chromium.
+
+    Measured: with google after brave and startpage, every search recorded
+    `google: error — cannot start a browser: ... Sync API inside the asyncio
+    loop`, because the inner session started a second driver.
+    """
+    with browser_mod.browser_session(Config()), browser_mod.browser_session(Config(), hide_automation=True):
+        pass
+
+    assert one_driver.starts == 1
+    assert len(one_driver.launches) == 2
+    assert browser_mod.HIDE_AUTOMATION_FLAG not in one_driver.launches[0]["args"]
+    assert browser_mod.HIDE_AUTOMATION_FLAG in one_driver.launches[1]["args"]
+
+
+def test_the_borrowed_driver_is_stopped_once_by_its_owner(one_driver):
+    with browser_mod.browser_session(Config()):
+        with browser_mod.browser_session(Config(), hide_automation=True):
+            pass
+        assert one_driver.running == 1  # the inner session did not stop it
+    assert one_driver.running == 0
+
+
+def test_a_session_after_the_chains_starts_its_own_driver_again(one_driver):
+    """Nothing lingers: `--source google` after a chain search still gets a fresh driver."""
+    with browser_mod.browser_session(Config()):
+        pass
+    with browser_mod.browser_session(Config(), hide_automation=True):
+        pass
+
+    assert one_driver.starts == 2
+    assert one_driver.running == 0
+
+
 def test_googles_launch_failures_are_engine_failures_too(playwright):
     playwright(launch_raises=RuntimeError("Executable doesn't exist"))
 

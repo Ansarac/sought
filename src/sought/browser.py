@@ -14,6 +14,7 @@ would drift and the second copy would be the one nobody notices going stale.
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
 from typing import TYPE_CHECKING, Any
@@ -78,6 +79,22 @@ class Browser:
 # opt-in `google` engine only, never by the chain's shared browser.
 HIDE_AUTOMATION_FLAG = "--disable-blink-features=AutomationControlled"
 
+# The Playwright driver an enclosing `browser_session` started, if any. The
+# sync API allows one per thread: a second `sync_playwright().start()` while
+# the first is running raises "using Playwright Sync API inside the asyncio
+# loop". The chain holds its session open across every engine, so google,
+# which launches its own Chromium mid-chain, has to borrow the running driver
+# rather than start one. Measured: google after brave and startpage failed
+# that way on every search, while `--source google` and doctor's probe, which
+# have no enclosing session, worked. Per thread, because the restriction is.
+_DRIVERS = threading.local()
+
+
+def _running_drivers() -> list[Any]:
+    if not hasattr(_DRIVERS, "stack"):
+        _DRIVERS.stack = []
+    return _DRIVERS.stack
+
 
 @contextmanager
 def browser_session(config: Config, *, hide_automation: bool = False) -> Iterator[Browser]:
@@ -128,8 +145,15 @@ def _acquire(stack: ExitStack, config: Config, *, hide_automation: bool) -> Any:
         msg = "the playwright package is not installed"
         raise EngineFailure("error", msg) from exc
 
-    pw = sync_playwright().start()
-    stack.callback(_close_quietly, pw.stop)
+    drivers = _running_drivers()
+    if drivers:
+        # Borrowed: the session that started it stops it.
+        pw = drivers[-1]
+    else:
+        pw = sync_playwright().start()
+        stack.callback(_close_quietly, pw.stop)
+        drivers.append(pw)
+        stack.callback(_close_quietly, lambda: drivers.remove(pw))
 
     try:
         browser = pw.chromium.launch(**_launch_kwargs(config, hide_automation=hide_automation))
