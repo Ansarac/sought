@@ -232,3 +232,36 @@ def detect_low_relevance(query: str, results: list[Result]) -> bool:
         return False
 
     return max(relevance_score(tokens, r) for r in results) < _RELEVANCE_THRESHOLD
+
+
+def relevance_report(query: str, results: list[Result]) -> dict[str, Any] | None:
+    """Say what `detect_low_relevance` saw, or None when it did not flag.
+
+    A bare flag invites the wrong reading. It used to be explained as "no
+    result mentions any query term", which is not what is measured: a user
+    saw a news result whose title said "Berkshire" flagged on a Berkshire
+    query, and the explanation made a working heuristic look broken. What is
+    measured is how much of the query the *best single* result covers, so
+    that is what this reports:
+
+    * `best_coverage` — that result's score, the same number the threshold is
+      applied to (length-weighted, URL matches at partial credit).
+    * `matched` — query tokens that result mentions in its title or snippet.
+    * `missing` — query tokens no result mentions in title or snippet.
+
+    A token in neither list is mentioned by some result, just not by the best
+    one. Purely descriptive: the decision is still `detect_low_relevance`'s,
+    unchanged, and this is computed only after it has flagged.
+    """
+    if not detect_low_relevance(query, results):
+        return None
+
+    tokens = list(dict.fromkeys(query_tokens(query)))
+    best = max(results, key=lambda r: relevance_score(tokens, r))
+    best_text = _tokens(f"{best.title} {best.snippet}")
+    mentioned = set().union(*(_tokens(f"{r.title} {r.snippet}") for r in results))
+    return {
+        "best_coverage": round(relevance_score(tokens, best), 2),
+        "matched": [t for t in tokens if t in best_text],
+        "missing": [t for t in tokens if t not in mentioned],
+    }

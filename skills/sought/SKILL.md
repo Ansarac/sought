@@ -43,6 +43,7 @@ JSON is the default because the envelope matters:
     {"engine": "startpage", "status": "ok", "count": 8}
   ],
   "low_relevance": false,
+  "relevance": null,
   "results": [{"title": "...", "url": "...", "snippet": "..."}]
 }
 ```
@@ -51,10 +52,31 @@ JSON is the default because the envelope matters:
 
 Check these fields before you trust the results.
 
-**`low_relevance: true`** — not one result mentions any significant word from
-the query. Treat the results as unverified. Either the engine is serving
-decoys, or the query was too abstract. Re-run with `--source startpage` or
-reword before quoting anything.
+**`low_relevance: true`** — even the *best single* result covers less than
+half of the query's significant words (weighted by length, so a rare word
+counts for more; a word found only in the URL counts partly). It does not mean
+nothing matched: a flagged result may well contain some query words. The check
+is biased toward flagging on purpose — a needless warning costs a second look,
+a missed decoy page costs a wrong answer — so read it as "verify", not as
+"discard".
+
+`relevance` says what the check saw. `null` when not flagged; when flagged:
+
+```json
+"relevance": {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
+```
+
+`best_coverage` is the best result's score (the flag is raised below 0.5),
+`matched` the query words that result mentions in its title or snippet, and
+`missing` the words *no* result mentions. Results that share the query's
+subject but miss its rarer words mean the query is narrower than what was
+found: skim them, or reword. Results that match nothing, or only stopword-ish
+filler, are what a decoy page looks like: re-run with `--source startpage` or
+another engine before quoting anything.
+
+For `--source news`, titles are short and the snippet is only the publisher
+and the date, so partial coverage is normal and the flag is common. Look at
+`matched` / `missing` and the titles rather than throwing the results away.
 
 **`attempts`** — every engine consulted, in order, whether or not it worked.
 An empty `results` list with a populated `attempts` list is a real answer:

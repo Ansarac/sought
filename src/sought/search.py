@@ -20,7 +20,7 @@ from sought.engines.base import (
     EngineFailure,
     Result,
     ResultList,
-    detect_low_relevance,
+    relevance_report,
 )
 from sought.errors import UsageError
 from sought.output import envelope
@@ -207,10 +207,14 @@ def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # 
 
 def _finish(query: str, attempts: list[Attempt], results: list[Result]) -> dict[str, Any]:
     winner = next((a.engine for a in attempts if a.status == "ok"), None)
+    # The report exists exactly when `detect_low_relevance` flags, so the flag
+    # is read off it rather than computed a second time and risk disagreeing.
+    report = relevance_report(query, results)
     return envelope(
         query=query,
         engine=winner,
         attempts=attempts,
         results=results,
-        low_relevance=detect_low_relevance(query, results),
+        low_relevance=report is not None,
+        relevance=report,
     )

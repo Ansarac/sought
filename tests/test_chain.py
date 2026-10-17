@@ -142,6 +142,26 @@ def test_low_relevance_is_computed_over_the_returned_results(engines):
     assert out["low_relevance"] is True
 
 
+def test_a_flagged_envelope_carries_the_numbers_behind_the_flag(engines):
+    _calls, behaviour = engines
+    behaviour["brave"] = [Result("Zigbee news", "https://lidl.de", "Angebote")]
+
+    out = search_mod.run("zigbee firmware flashing", config=_cfg())
+
+    assert out["low_relevance"] is True
+    assert out["relevance"] == {"best_coverage": 0.27, "matched": ["zigbee"], "missing": ["firmware", "flashing"]}
+
+
+def test_an_unflagged_envelope_has_null_relevance(engines):
+    _calls, behaviour = engines
+    behaviour["brave"] = [Result("Zigbee firmware flashing guide", "https://example.com", "")]
+
+    out = search_mod.run("zigbee firmware flashing", config=_cfg())
+
+    assert out["low_relevance"] is False
+    assert out["relevance"] is None
+
+
 def test_an_unknown_source_is_a_usage_error(engines):
     with pytest.raises(UsageError):
         search_mod.run("q", config=_cfg(), source="nonesuch")

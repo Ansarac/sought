@@ -33,7 +33,8 @@ relevance score of 0.38. A number next to a wrong answer is worse than no
 number.
 
 So sought uses a real browser where one is required, keeps a full audit trail
-of every engine it consulted, and flags results that do not mention the query.
+of every engine it consulted, and flags results whose best match still covers
+too little of the query.
 
 ## Install
 
@@ -78,6 +79,7 @@ Output is JSON by default because the envelope carries the audit trail:
     {"engine": "startpage", "status": "ok", "count": 8}
   ],
   "low_relevance": false,
+  "relevance": null,
   "results": [{"title": "...", "url": "...", "snippet": "..."}]
 }
 ```
@@ -161,6 +163,27 @@ a page arrives as a valid HTTP 200. It is deliberately biased toward false
 positives — a spurious warning costs a second glance, a missed one costs a
 wrong answer. A query of pure nonsense is always flagged, whatever the engine
 returns.
+
+A flag comes with its numbers, so it can be judged rather than obeyed:
+
+```json
+"low_relevance": true,
+"relevance": {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
+```
+
+`best_coverage` is the best result's score (flagged below 0.5), `matched` the
+query tokens that result mentions in its title or snippet, `missing` the
+tokens no result mentions. `relevance` is `null` when nothing is flagged.
+`--pretty` prints the same:
+
+```
+!! LOW RELEVANCE: the best result covers only 38% of the query's terms, weighted by length (matched: berkshire; missing from every result: abel, earnings).
+!! Either these results only touch part of the query, or the engine served decoys. Verify before trusting.
+```
+
+A flagged result can therefore still contain query words — the check is
+about coverage, not about any mention. That is common for `news`, whose
+titles are short.
 
 ### Exit codes
 
