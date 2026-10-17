@@ -19,6 +19,7 @@ from sought.engines.base import (
     Attempt,
     EngineFailure,
     Result,
+    ResultList,
     detect_low_relevance,
 )
 from sought.errors import UsageError
@@ -173,8 +174,9 @@ def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # 
         attempts.append(Attempt(name, "empty", "returned no results"))
         return []
 
-    attempts.append(Attempt(name, "ok", count=len(results)))
-    return results
+    detail = results.detail if isinstance(results, ResultList) else ""
+    attempts.append(Attempt(name, "ok", detail, count=len(results)))
+    return list(results)
 
 
 def _finish(query: str, attempts: list[Attempt], results: list[Result]) -> dict[str, Any]:

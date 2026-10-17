@@ -11,6 +11,7 @@ would drift and the second copy would be the one nobody notices going stale.
 
 from __future__ import annotations
 
+import time
 from contextlib import ExitStack, contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from sought.config import Config
+
+# Startpage's JavaScript proof-of-work interstitial ("Verifying your request...
+# Calculating... Difficulty: 6"). Unlike every other marker it resolves itself:
+# the page's own script computes the answer and moves on to the results, the
+# same as in any visitor's browser. Measured headless, with nothing spoofed:
+# 39 s. `goto` waits for it when asked to; still showing at the end of the
+# wait, it is a refusal like the rest.
+POW_CHALLENGE_MARKER = "verifying your request"
 
 # Phrases that mean "we know you are a bot", as served with an HTTP 200.
 BOT_WALL_MARKERS = (
@@ -37,7 +46,7 @@ BOT_WALL_MARKERS = (
     # Startpage's proof-of-work interstitial, served with a 200 and an empty
     # title. Caught live: until this was listed, it came out as `empty` and
     # exit 1, "the web has no answer", for a query nobody ever ran.
-    "verifying your request",
+    POW_CHALLENGE_MARKER,
 )
 
 
@@ -160,8 +169,28 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_BAD_REQUEST = 400
 
 
-def goto(page: Any, url: str, *, wait_for: str, selector_timeout_ms: int = SELECTOR_TIMEOUT_MS) -> None:  # noqa: ANN401
-    """Navigate and wait for the results container, classifying every failure."""
+def goto(
+    page: Any,  # noqa: ANN401 — Playwright page
+    url: str,
+    *,
+    wait_for: str,
+    selector_timeout_ms: int = SELECTOR_TIMEOUT_MS,
+    challenge_wait_ms: int = 0,
+) -> float | None:
+    """Navigate and wait for the results container, classifying every failure.
+
+    With `challenge_wait_ms`, a proof-of-work interstitial (`POW_CHALLENGE_MARKER`)
+    extends the wait to that many milliseconds from arrival, instead of being
+    reported as a bot wall the moment `selector_timeout_ms` runs out. Returns
+    the seconds spent getting past one, or None when there was none.
+
+    One navigation, then waiting. Nothing here reloads or re-requests:
+    `wait_for_selector` keeps polling across the navigation the challenge
+    script performs when it is done (Playwright retries the query whenever the
+    execution context is replaced), so the results page is picked up wherever
+    it comes from. The explicit timeouts also override the context default
+    (`engines.timeout_seconds`), which would otherwise cut the wait short.
+    """
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -178,12 +207,26 @@ def goto(page: Any, url: str, *, wait_for: str, selector_timeout_ms: int = SELEC
     if status >= _HTTP_BAD_REQUEST:
         raise EngineFailure("blocked", f"HTTP {status}")
 
+    arrived = time.monotonic()
+    # Recognised up front when it is already in the served HTML, so the whole
+    # allowance goes to it. A challenge that only renders later is caught
+    # below, once the ordinary wait has run out.
+    challenged = challenge_wait_ms > 0 and _shows_challenge(page)
     try:
-        page.wait_for_selector(wait_for, timeout=selector_timeout_ms)
+        page.wait_for_selector(wait_for, timeout=challenge_wait_ms if challenged else selector_timeout_ms)
     except PlaywrightTimeout as exc:
-        # No results container. Distinguish a bot wall from a genuinely empty
-        # page before reporting, because they need opposite responses.
-        raise _classify_stuck_page(page) from exc
+        remaining_ms = challenge_wait_ms - int((time.monotonic() - arrived) * 1000)
+        if challenged or remaining_ms <= 0 or not _shows_challenge(page):
+            # No results container. Distinguish a bot wall from a genuinely
+            # empty page before reporting, because they need opposite responses.
+            raise _classify_stuck_page(page, challenge_wait_ms=challenge_wait_ms) from exc
+        challenged = True
+        try:
+            page.wait_for_selector(wait_for, timeout=remaining_ms)
+        except PlaywrightTimeout as again:
+            raise _classify_stuck_page(page, challenge_wait_ms=challenge_wait_ms) from again
+
+    return time.monotonic() - arrived if challenged else None
 
 
 def extract(page: Any, script: str, arg: Any, *, timeout_ms: int) -> Any:  # noqa: ANN401 — Playwright page and JSON
@@ -232,14 +275,31 @@ def classify_dead_page(body: str, *, empty_detail: str) -> EngineFailure:
     return EngineFailure("empty", empty_detail)
 
 
-def _classify_stuck_page(page: Any) -> EngineFailure:  # noqa: ANN401 — Playwright page
-    """Decide why the results container never appeared."""
-    try:
-        body = page.inner_text("body") or ""
-    except Exception:  # noqa: BLE001 — diagnostics must not raise
-        body = ""
+def _classify_stuck_page(page: Any, *, challenge_wait_ms: int = 0) -> EngineFailure:  # noqa: ANN401 — Playwright page
+    """Decide why the results container never appeared.
 
+    A proof-of-work challenge sought was told to wait for, and did, gets its
+    own detail: "bot wall" alone would hide that sought gave it the full
+    allowance, which is the difference between "raise the limit" and "this
+    engine is refusing you".
+    """
+    body = _body_text(page)
+    if challenge_wait_ms > 0 and POW_CHALLENGE_MARKER in body.lower():
+        detail = f"proof-of-work challenge not completed within {challenge_wait_ms // 1000}s"
+        return EngineFailure("rate_limited", detail)
     return classify_dead_page(body, empty_detail="results container never rendered")
+
+
+def _shows_challenge(page: Any) -> bool:  # noqa: ANN401 — Playwright page
+    return POW_CHALLENGE_MARKER in _body_text(page).lower()
+
+
+def _body_text(page: Any) -> str:  # noqa: ANN401 — Playwright page
+    """Read the page's visible text, or "" when it cannot be read. Diagnostics must not raise."""
+    try:
+        return page.inner_text("body") or ""
+    except Exception:  # noqa: BLE001 — diagnostics must not raise
+        return ""
 
 
 def _first_line(exc: Exception) -> str:

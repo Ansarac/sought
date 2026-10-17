@@ -72,6 +72,14 @@ it tells you *why* there is nothing. Statuses:
 If `results` is empty **and** `attempts` is empty, that is a bug — report it
 rather than concluding the web has no answer.
 
+**An `ok` attempt can carry a `detail` too.** It is something worth knowing
+about an answer that did arrive. `startpage` with `passed proof-of-work
+challenge in 39s` means Startpage made the browser compute a JavaScript
+challenge first; it explains a search that took most of a minute, and the
+results are as good as any. If the challenge does not finish in time (60 s by
+default), the attempt is `rate_limited` with `proof-of-work challenge not
+completed within 60s` and the chain moved on.
+
 **Cooldowns.** After an engine answers `rate_limited`, sought leaves it alone
 for a while (10 minutes by default) instead of asking again and prolonging the
 ban. It still appears in `attempts`, as `rate_limited` with a detail like

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sought.browser import Browser
     from sought.config import Config
 
@@ -36,6 +38,25 @@ class Result:
     def as_dict(self) -> dict[str, str]:
         """Serialise for the JSON envelope."""
         return {"title": self.title, "url": self.url, "snippet": self.snippet}
+
+
+class ResultList(list[Result]):
+    """Results, plus a note the engine wants on its `ok` attempt.
+
+    An answer can come with a fact the audit trail should carry even though
+    nothing failed: Startpage made sought wait out a proof-of-work challenge
+    (which explains a 40-second search), Google was reached with the automation
+    flag hidden (which a reader of the results is entitled to know). Without
+    this the chain records a bare `ok` and the fact is lost.
+
+    A list subclass rather than a new return type, so every engine and test
+    stub that returns a plain list keeps working, with no note.
+    """
+
+    def __init__(self, results: Iterable[Result] = (), *, detail: str = "") -> None:
+        """Wrap results with the detail for their `ok` attempt."""
+        super().__init__(results)
+        self.detail = detail
 
 
 @dataclass(frozen=True)

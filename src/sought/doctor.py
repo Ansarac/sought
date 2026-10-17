@@ -452,7 +452,11 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
         payload = search_run("sought self test", config=cfg, source=name, cache="off")
         attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
         ok = attempt["status"] == "ok"
-        detail = f"{attempt.get('count', 0)} results" if ok else f"{attempt['status']} — {attempt.get('detail', '')}"
+        if ok:
+            note = f" — {attempt['detail']}" if attempt.get("detail") else ""
+            detail = f"{attempt.get('count', 0)} results{note}"
+        else:
+            detail = f"{attempt['status']} — {attempt.get('detail', '')}"
         # An individual engine being down is exactly what the chain is for, so
         # a probe failure is a warning; only a chain with nothing left is fatal.
         checks.append(Check(f"engine {name}", ok=ok, detail=detail, required=False))

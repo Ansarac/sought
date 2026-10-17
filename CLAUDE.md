@@ -108,8 +108,21 @@ round-trip per step.
 **A detected bot wall is a status, not an obstacle to route around.**
 `BOT_WALL_MARKERS` in `browser.py` turns the wall into a `rate_limited`
 attempt and the chain moves to the next engine. Do not add retry loops,
-fingerprint spoofing, or CAPTCHA solving — the audit trail is the product, and
-recording the refusal is the correct behaviour.
+reloads, fingerprint spoofing, or CAPTCHA solving — the audit trail is the
+product, and recording the refusal is the correct behaviour.
+
+**Waiting out a site's own JavaScript proof-of-work is not solving it.**
+Startpage often answers first with "Verifying your request... Calculating...
+Difficulty: 6": a script the page runs in every visitor's browser, which then
+moves on to the results by itself. sought's browser runs it unmodified; sought
+only waits (`engines.challenge_wait_seconds`, default 60, counted from
+arrival). Measured headless with nothing spoofed: results after 39 s, where
+the old 15 s selector timeout had reported `rate_limited — bot wall` for a
+refusal nobody made. One navigation, then patience — no reload, no
+re-request. Still showing at the end of the allowance, it is `rate_limited`
+(`proof-of-work challenge not completed within 60s`); passed, the `ok`
+attempt says so (`passed proof-of-work challenge in 39s`). Anything that
+wants a human, a CAPTCHA above all, stays a wall.
 
 ## Layout
 

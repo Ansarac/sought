@@ -209,6 +209,17 @@ next engine. There is no retry loop, no fingerprint spoofing, and no CAPTCHA
 solving. A refusal is a result like any other, and recording it is more useful
 than defeating it.
 
+One page is not a refusal, and sought waits for it instead. Startpage often
+answers first with "Verifying your request... Calculating... Difficulty: 6" —
+a JavaScript proof-of-work the page runs in every visitor's browser before it
+moves on to the results by itself. sought's browser runs it like any other,
+unmodified; sought only waits, for up to `engines.challenge_wait_seconds`
+(default 60) after one navigation, with no reload and no second request.
+Measured headless: the results appeared after 39 s. The wait is on the
+record either way — `ok` with `"detail": "passed proof-of-work challenge in
+39s"`, or `rate_limited` with `"proof-of-work challenge not completed within
+60s"` — so a slow search is explained rather than mysterious.
+
 ## Configuration
 
 `~/.config/sought/config.toml`. Precedence: **CLI flags > config file >
@@ -233,6 +244,7 @@ order = ["brave", "startpage", "marginalia"]
 timeout_seconds = 30
 limit = 10
 cooldown_seconds = 600   # leave a rate-limited engine alone this long; 0 disables
+challenge_wait_seconds = 60  # how long to let Startpage's proof-of-work page finish
 
 [cache]
 ttl_seconds = 900        # replay identical successful searches this long; 0 disables

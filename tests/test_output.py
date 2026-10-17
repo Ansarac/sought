@@ -110,3 +110,15 @@ def test_a_replay_is_labelled_before_anything_else(capsys):
 def test_long_cache_ages_read_in_hours(capsys):
     print_pretty(_payload(cached={"age_seconds": 3 * 3600 + 5 * 60}))
     assert "3h 5m old" in capsys.readouterr().out
+
+
+def test_an_ok_attempt_shows_its_detail(capsys):
+    """A passed challenge explains a slow search; it must reach the human-readable view too."""
+    print_pretty(
+        _payload(
+            attempts=[
+                {"engine": "startpage", "status": "ok", "count": 2, "detail": "passed proof-of-work challenge in 39s"}
+            ]
+        )
+    )
+    assert "✓ startpage: 2 results — passed proof-of-work challenge in 39s" in capsys.readouterr().out

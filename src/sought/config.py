@@ -22,6 +22,7 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_LIMIT = 10
 DEFAULT_COOLDOWN = 600
 DEFAULT_CACHE_TTL = 900
+DEFAULT_CHALLENGE_WAIT = 60
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # sought configuration — https://github.com/Ansarac/sought
@@ -49,6 +50,14 @@ limit = 10
 # `rate_limited` with "cooling down ... not asked this time". 0 disables.
 # `sought config --clear-state` ends every cooldown early.
 cooldown_seconds = 600
+# Startpage often answers first with "Verifying your request... Calculating...",
+# a JavaScript proof-of-work. The browser completes it by itself — it is doing
+# exactly what the site asks every visitor's browser to do; nothing is spoofed,
+# solved or retried by sought — and the results follow. Measured: 39 s. This is
+# how long sought waits for that, from the page's arrival, before recording
+# `rate_limited` ("proof-of-work challenge not completed within ...s").
+# Separate from timeout_seconds, which would otherwise cut the wait short.
+challenge_wait_seconds = 60
 
 [cache]
 # Replay an identical search (same query, source, order and limit) from a
@@ -139,6 +148,7 @@ class Config:
     limit: int = DEFAULT_LIMIT
     cooldown_seconds: int = DEFAULT_COOLDOWN
     cache_ttl_seconds: int = DEFAULT_CACHE_TTL
+    challenge_wait_seconds: int = DEFAULT_CHALLENGE_WAIT
     system_trust: bool = True
     browser_ignore_cert_errors: bool = False
     source_path: Path | None = None
@@ -205,6 +215,13 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
         cache_ttl_seconds=_non_negative_int(
             cache_raw.get("ttl_seconds", DEFAULT_CACHE_TTL),
             "cache.ttl_seconds",
+            path,
+        ),
+        # Positive, not "0 disables": waiting zero seconds is not a different
+        # policy, it is the old bug — calling a challenge in progress a refusal.
+        challenge_wait_seconds=positive_int(
+            engines_raw.get("challenge_wait_seconds", DEFAULT_CHALLENGE_WAIT),
+            "engines.challenge_wait_seconds",
             path,
         ),
         system_trust=_bool(tls_raw.get("system_trust", True), "tls.system_trust", path),

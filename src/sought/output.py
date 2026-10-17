@@ -58,7 +58,10 @@ def print_pretty(payload: dict[str, Any]) -> None:
     for attempt in payload["attempts"]:
         status = attempt["status"]
         if status == "ok":
-            print(f"  ✓ {attempt['engine']}: {attempt.get('count', 0)} results")
+            # An `ok` detail is something the engine wants on the record even
+            # though it answered — a long challenge wait, a disclosed evasion.
+            note = f" — {attempt['detail']}" if attempt.get("detail") else ""
+            print(f"  ✓ {attempt['engine']}: {attempt.get('count', 0)} results{note}")
         else:
             hint = _STATUS_HINT.get(status, "")
             detail = attempt.get("detail") or hint
