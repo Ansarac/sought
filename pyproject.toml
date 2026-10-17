@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "Web search CLI with an explicit audit trail: every engine consulted, and what each one did."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 authors = [
     { name = "Ansarac", email = "45335466+Ansarac@users.noreply.github.com" },
 ]
@@ -24,7 +24,7 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
     "Topic :: Utilities",
@@ -68,7 +68,7 @@ packages = ["src/sought"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 extend-select = ["ALL"]

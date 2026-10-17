@@ -467,7 +467,7 @@ def _read_json(path: Path) -> object:
     """Parse a state file, or return None if it is missing, unreadable or corrupt."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 
@@ -485,7 +485,7 @@ def _write_json(path: Path, data: object) -> None:
             json.dump(data, fh, ensure_ascii=False)
         Path(tmp).replace(path)
         tmp = None
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         pass
     finally:
         if tmp is not None:

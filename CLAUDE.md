@@ -188,7 +188,7 @@ skills/sought/SKILL.md         force-included into the wheel
 The "uv tool + bundled skill" packaging pattern is the load-bearing one; the
 rest is ordinary:
 
-- Python 3.13, src layout, hatchling.
+- Python 3.14, src layout, hatchling.
 - ruff with `extend-select = ["ALL"]`, line length 120.
 - `run()` converts `SoughtError` to an exit code and lets real bugs keep their
   traceback. Do not widen that catch.

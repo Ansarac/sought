@@ -9,18 +9,28 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Windows is a supported platform with its own measured behaviour (PAC-only
+    # proxies, legacy console code pages, case-insensitive environment), so it
+    # gets the same three gates as Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # A full version: setup-uv publishes no floating `v10` tag, so `@v10`
+      # does not resolve. Dependabot keeps it current.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           enable-cache: true
 
-      # Every test is offline: no network, no Chromium. Deliberately skipping
-      # `playwright install` keeps CI fast and hermetic.
+      # Every test is offline: no network, no Chromium (tests/conftest.py
+      # refuses both). Deliberately skipping `playwright install` keeps CI fast
+      # and hermetic.
       - name: Sync dependencies
         run: uv sync --locked
 

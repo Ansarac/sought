@@ -32,7 +32,7 @@ def no_system_proxy(monkeypatch):
 @pytest.fixture
 def stub_checks(monkeypatch):
     """Replace every probe so only the summary logic is under test."""
-    monkeypatch.setattr(doctor, "_python", lambda: doctor.Check("python", ok=True, detail="3.13"))
+    monkeypatch.setattr(doctor, "_python", lambda: doctor.Check("python", ok=True, detail="3.14"))
     monkeypatch.setattr(doctor, "_playwright_package", lambda: doctor.Check("pw", ok=True, detail="ok"))
     monkeypatch.setattr(doctor, "_config_checks", lambda _cfg: [])
     monkeypatch.setattr(doctor, "_tls_note", lambda _cfg, *, probes: None)  # noqa: ARG005

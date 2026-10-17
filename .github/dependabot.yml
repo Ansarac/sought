@@ -1,0 +1,24 @@
+# Keep the lock and the CI actions at their newest releases, which is the
+# point of tracking current Python and dependencies rather than pinning old
+# ones. Grouped so a week's upgrades arrive as one PR per ecosystem, gated by
+# the same CI (Linux and Windows) as any other change.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+    # A release gets a few days to be yanked before it lands here.
+    cooldown:
+      default-days: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
