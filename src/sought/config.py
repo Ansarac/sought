@@ -111,8 +111,9 @@ browser_ignore_cert_errors = false
 # To use it: set enabled = true, AND either add "google" to [engines] order
 # (it is not in the default order) or ask for it with `--source google`. Its
 # results are disclosed in the audit trail as "automation flag hidden
-# (google.enabled)", and their links are google.com/goto redirects: Google no
-# longer puts the destination URL in the page.
+# (google.enabled)". Google serves its links as google.com/goto redirects;
+# sought resolves them to the real URLs (one small request per result to
+# /goto, not counted against the budget).
 enabled = false
 max_per_hour = 20
 """

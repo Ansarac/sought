@@ -352,15 +352,16 @@ def test_a_dead_page_is_classified_by_its_body_not_its_status(body, status):
     assert failure.status == status
 
 
-def test_a_page_that_cannot_even_be_read_is_reported_as_empty():
-    """Diagnostics must not raise. An unreadable body is the honest `empty`."""
+def test_a_page_that_cannot_even_be_read_is_an_error_not_empty():
+    """Diagnostics must not raise, and a page sought could not read says nothing about the web."""
 
     class Unreadable(FakePage):
         def inner_text(self, _selector):
             raise RuntimeError("page is gone")
 
     failure = browser_mod._classify_stuck_page(Unreadable())  # noqa: SLF001
-    assert failure.status == "empty"
+    assert failure.status == "error"
+    assert "page not recognised" in failure.detail
 
 
 def test_hiding_the_automation_flag_is_googles_alone(playwright, clean_proxy_env):

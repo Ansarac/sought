@@ -164,13 +164,15 @@ def test_no_challenge_means_the_old_wait_and_no_note(clock):
     assert page.waits == [browser_mod.SELECTOR_TIMEOUT_MS]
 
 
-def test_no_challenge_and_no_container_is_still_empty(clock):
+def test_no_challenge_and_no_container_is_an_unrecognised_page(clock):
+    """Not `empty`: a missing container is sought not understanding the page (Brave, 2026-10)."""
     page = ChallengePage(clock, body_at=always("Nothing here."), clears_at=None)
 
     with pytest.raises(EngineFailure) as exc:
         browser_mod.goto(page, "https://sp.example/", wait_for=".w-gl", challenge_wait_ms=60_000)
 
-    assert exc.value.status == "empty"
+    assert exc.value.status == "error"
+    assert "page not recognised" in exc.value.detail
     assert page.waits == [browser_mod.SELECTOR_TIMEOUT_MS]
 
 

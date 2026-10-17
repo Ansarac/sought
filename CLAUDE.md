@@ -25,6 +25,10 @@ Every change should be checked against that sentence. Concretely:
   `empty` into `rate_limited` or vice versa — they call for opposite responses.
 - Exit code `1` (searched fine, found nothing) and `2` (every source failed)
   are different facts. Keep them apart.
+- `empty` means the engine said "nothing matched". A page sought does not
+  understand — no results container, no known wall — is `error`. Measured:
+  Brave moved its results out of `#results` and nineteen results were
+  reported as `empty`. Never default an unrecognised page to `empty`.
 - `detect_low_relevance` is biased toward false positives on purpose. Do not
   "fix" that.
 
