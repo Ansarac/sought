@@ -15,7 +15,11 @@ lint:
 fmt:
     uv run ruff format .
 
-check: lint test
+fmt-check:
+    uv run ruff format --check .
+
+# The same three gates CI runs, so a green `just check` means a green CI.
+check: lint fmt-check test
 
 # Self-check without touching the network.
 doctor:

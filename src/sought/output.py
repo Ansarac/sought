@@ -78,8 +78,7 @@ def print_pretty(payload: dict[str, Any]) -> None:
         # One possibility among two, not a verdict: the check cannot tell a
         # decoy page from a query more specific than what the web has.
         print(
-            "!! Either these results only touch part of the query, or the engine served decoys. "
-            "Verify before trusting."
+            "!! Either these results only touch part of the query, or the engine served decoys. Verify before trusting."
         )
         print()
 
