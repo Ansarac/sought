@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from sought import __version__
 from sought import config as config_mod
-from sought.engines.base import GENERAL_ENGINES, VERTICAL_SOURCES, all_source_names
+from sought.engines.base import GENERAL_ENGINES, OPT_IN_ENGINES, VERTICAL_SOURCES, all_source_names
 from sought.errors import ConfigError, InvariantError, NoResultsError, SoughtError, UpstreamError, UsageError
 from sought.output import print_json, print_pretty
 from sought.skill import DEFAULT_SKILL_ROOT, install_skill, locate_skill
@@ -31,7 +31,8 @@ commands:
   with one: sought "doctor who".
 
 sources:
-  general (fallback chain, tried in order): {", ".join(GENERAL_ENGINES)}
+  general (fallback chain, tried in order): {", ".join(e for e in GENERAL_ENGINES if e not in OPT_IN_ENGINES)}
+  general, opt-in (off by default):         {", ".join(sorted(OPT_IN_ENGINES))} — see [google] in `sought config --init`
   vertical (exact, keyless APIs):           {", ".join(VERTICAL_SOURCES)}
 
 examples:

@@ -13,9 +13,15 @@ Two mechanisms, both kept under `${XDG_CACHE_HOME:-~/.cache}/sought/`:
   minutes. Replaying an envelope that had results is cheaper for everyone, and
   the replay is labelled (`cached.age_seconds`) so it is never mistaken for a
   fresh search.
+* **A request budget** for the opt-in `google` engine: a sliding hour of
+  request timestamps, checked before Chromium is launched. It bounds what one
+  shared egress IP shows Google, which is the user's call to make, not a
+  refusal by Google — so it is a separate mechanism from the cooldowns.
 
-Both are disposable. `sought config --clear-state` (`clear_state`) deletes
-them early, for the user who has fixed whatever caused a refusal.
+Cooldowns and the cache are disposable. `sought config --clear-state`
+(`clear_state`) deletes them early, for the user who has fixed whatever caused
+a refusal. It does not touch the budget: nothing about the network being
+fixed makes another burst of automated Google queries any safer.
 
 Everything here is an optimisation. A missing, corrupt or unwritable state
 file must degrade to "no cooldowns, cache miss" and never break a search, so
@@ -53,7 +59,8 @@ _CACHE_FORMAT = 1
 
 # Only the general engines are scraped, so only they can be hammered. A
 # vertical source that rate limits is a documented API saying "slow down" for
-# this one request, and the next request is cheap to make.
+# this one request, and the next request is cheap to make. `google` is a
+# general engine and is cooled like the rest.
 _COOLED = frozenset(GENERAL_ENGINES)
 
 
@@ -178,6 +185,90 @@ def _read_cooldowns() -> dict[str, dict[str, Any]]:
         and _is_number(entry.get("until"))
         and _is_number(entry.get("at"))
         and isinstance(entry.get("detail"), str)
+    }
+
+
+# --- request budget ---------------------------------------------------------
+
+BUDGET_FILE = "budget.json"
+_HOUR = 3600.0
+
+
+@dataclass(frozen=True)
+class Budget:
+    """An engine's local hourly allowance, as of now."""
+
+    engine: str
+    limit: int
+    used: int
+    next_slot: float | None  # when a request may be made again; None while one may be made now
+
+    @property
+    def remaining(self) -> int:
+        """Requests still allowed in the current hour-long window."""
+        return max(self.limit - self.used, 0)
+
+    def describe(self) -> str:
+        """`18/20 left this hour` — for doctor."""
+        return f"{self.remaining}/{self.limit} left this hour"
+
+
+def budget(engine: str, *, per_hour: int) -> Budget:
+    """How much of an engine's hourly budget the last hour has used.
+
+    A sliding window, not a clock hour: a burst of twenty at 13:59 does not buy
+    another twenty at 14:00. The next slot opens when enough of the window's
+    requests have aged out to bring it under the limit.
+    """
+    stamps = sorted(_budget_window(_read_budget().get(engine, []), _now()))
+    used = len(stamps)
+    next_slot = stamps[used - per_hour] + _HOUR if used >= per_hour else None
+    return Budget(engine, per_hour, used, next_slot)
+
+
+def over_budget(engine: str, *, per_hour: int) -> Attempt | None:
+    """Return a ready-made `rate_limited` attempt if the budget is spent, else None.
+
+    Shaped like `cooling_down`: a skip that still appears in the audit trail,
+    worded so it cannot be read as the engine having refused. Never fed to
+    `note_outcome` — sought holding itself back is not a refusal, and a
+    cooldown started by it would later be reported as one.
+    """
+    state = budget(engine, per_hour=per_hour)
+    if state.next_slot is None:
+        return None
+    detail = f"local budget {per_hour}/h used, next slot at {_clock(state.next_slot)} — not asked"
+    return Attempt(engine, "rate_limited", detail)
+
+
+def spend_budget(engine: str) -> None:
+    """Record one real request against an engine's budget.
+
+    Called just before the navigation, so a request that then fails still
+    counts: the budget bounds what the engine *sees*. Concurrent sought
+    processes can lose an update here as with cooldowns; at worst one request
+    goes uncounted. A corrupt file is read as an empty one — the same "degrade,
+    never break a search" rule as everything else in this module.
+    """
+    now = _now()
+    entries = {name: _budget_window(stamps, now) for name, stamps in _read_budget().items()}
+    entries[engine] = [*entries.get(engine, []), now]
+    _write_json(cache_dir() / BUDGET_FILE, {name: stamps for name, stamps in entries.items() if stamps})
+
+
+def _budget_window(stamps: list[float], now: float) -> list[float]:
+    """Keep the stamps inside the last hour. Future ones mean the clock moved; they are dropped."""
+    return [t for t in stamps if now - _HOUR < t <= now]
+
+
+def _read_budget() -> dict[str, list[float]]:
+    raw = _read_json(cache_dir() / BUDGET_FILE)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        name: [t for t in stamps if _is_number(t)]
+        for name, stamps in raw.items()
+        if isinstance(name, str) and isinstance(stamps, list)
     }
 
 

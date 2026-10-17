@@ -1,7 +1,10 @@
 """Playwright lifecycle: one Chromium instance shared by the whole fallback chain.
 
 Launching Chromium costs about a second, so the chain opens it once and every
-browser engine borrows a page from the same context.
+browser engine borrows a page from the same context. The one exception is the
+opt-in `google` engine, which launches a separate Chromium with the automation
+flag hidden (`hide_automation`) so that nothing about how `brave` and
+`startpage` are launched changes when it is switched on.
 
 Also the home of `BOT_WALL_MARKERS`, the list of phrases that mean "blocked"
 on a page that arrived with an HTTP 200. That list is shared with the HTTP-only
@@ -68,9 +71,24 @@ class Browser:
             page.close()
 
 
+# What `hide_automation` adds to the launch. Chromium sets
+# `navigator.webdriver = true` under automation, and Google refuses such a
+# browser per request (docs/findings/2026-10-egress-google-windows.md, §3-4).
+# This switch makes it report false. It is fingerprint evasion, used by the
+# opt-in `google` engine only, never by the chain's shared browser.
+HIDE_AUTOMATION_FLAG = "--disable-blink-features=AutomationControlled"
+
+
 @contextmanager
-def browser_session(config: Config) -> Iterator[Browser]:
+def browser_session(config: Config, *, hide_automation: bool = False) -> Iterator[Browser]:
     """Launch Chromium for the duration of the block.
+
+    `hide_automation` is for the opt-in `google` engine and nothing else: it
+    adds `HIDE_AUTOMATION_FLAG` to the launch and opens the context without a
+    fixed viewport, the combination measured to get past Google's
+    per-request check. Everything else — proxy, certificates, user agent,
+    timeouts, teardown — is the same code path, so the explicit-proxy fix
+    cannot be forgotten on one side.
 
     Every step of acquisition — importing Playwright, starting its driver,
     launching the browser, opening a context — is reported as
@@ -87,7 +105,7 @@ def browser_session(config: Config) -> Iterator[Browser]:
     """
     with ExitStack() as stack:
         try:
-            context = _acquire(stack, config)
+            context = _acquire(stack, config, hide_automation=hide_automation)
         except EngineFailure:
             raise
         except Exception as exc:  # Playwright raises many types; none of them may escape
@@ -97,7 +115,7 @@ def browser_session(config: Config) -> Iterator[Browser]:
         yield Browser(context, config.timeout_seconds * 1000)
 
 
-def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playwright BrowserContext
+def _acquire(stack: ExitStack, config: Config, *, hide_automation: bool) -> Any:  # noqa: ANN401 — BrowserContext
     """Start Playwright and open a context, registering each teardown as it goes.
 
     Teardown is registered step by step so that a failure halfway through
@@ -114,16 +132,21 @@ def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playw
     stack.callback(_close_quietly, pw.stop)
 
     try:
-        browser = pw.chromium.launch(**_launch_kwargs(config))
+        browser = pw.chromium.launch(**_launch_kwargs(config, hide_automation=hide_automation))
     except Exception as exc:  # Playwright raises many types for "no browser"
         msg = f"cannot launch chromium: {_first_line(exc)} (try: sought doctor --fix)"
         raise EngineFailure("error", msg) from exc
     stack.callback(_close_quietly, browser.close)
 
+    # Python's `viewport=None` means "the default 1280x720", not "none":
+    # `no_viewport` is the binding's spelling of the JS `viewport: null` that
+    # was measured. A fixed-viewport context was the second, weaker signal
+    # Google reacted to (findings §4).
+    screen: dict[str, Any] = {"no_viewport": True} if hide_automation else {"viewport": {"width": 1280, "height": 900}}
     context = browser.new_context(
         ignore_https_errors=config.browser_ignore_cert_errors,
         user_agent=DEFAULT_UA,
-        viewport={"width": 1280, "height": 900},
+        **screen,
     )
     stack.callback(_close_quietly, context.close)
 
@@ -131,10 +154,12 @@ def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playw
     return context
 
 
-def _launch_kwargs(config: Config) -> dict[str, Any]:
+def _launch_kwargs(config: Config, *, hide_automation: bool = False) -> dict[str, Any]:
     launch_args = ["--no-sandbox"]
     if config.browser_ignore_cert_errors:
         launch_args.append("--ignore-certificate-errors")
+    if hide_automation:
+        launch_args.append(HIDE_AUTOMATION_FLAG)
 
     kwargs: dict[str, Any] = {"headless": True, "args": launch_args}
     proxy_server = config.proxy.browser_server() or environment_proxy()
@@ -169,15 +194,21 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_BAD_REQUEST = 400
 
 
-def goto(
+def goto(  # noqa: PLR0913 — each keyword is one engine's need, all optional
     page: Any,  # noqa: ANN401 — Playwright page
     url: str,
     *,
     wait_for: str,
     selector_timeout_ms: int = SELECTOR_TIMEOUT_MS,
     challenge_wait_ms: int = 0,
+    on_arrival: Callable[[Any], None] | None = None,
 ) -> float | None:
     """Navigate and wait for the results container, classifying every failure.
+
+    `on_arrival` sees the page before its HTTP status is judged, for an engine
+    whose walls are best recognised by where they land (Google's `/sorry/`
+    arrives as a 429, and "HTTP 429" would hide which wall it was). It raises
+    EngineFailure to classify, or returns to carry on.
 
     With `challenge_wait_ms`, a proof-of-work interstitial (`POW_CHALLENGE_MARKER`)
     extends the wait to that many milliseconds from arrival, instead of being
@@ -200,6 +231,9 @@ def goto(
         raise EngineFailure("timeout", "navigation timed out") from exc
     except PlaywrightError as exc:
         raise EngineFailure("blocked", _first_line(exc)) from exc
+
+    if on_arrival is not None:
+        on_arrival(page)
 
     status = response.status if response is not None else 0
     if status == _HTTP_TOO_MANY_REQUESTS:

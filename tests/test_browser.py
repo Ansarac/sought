@@ -361,3 +361,47 @@ def test_a_page_that_cannot_even_be_read_is_reported_as_empty():
 
     failure = browser_mod._classify_stuck_page(Unreadable())  # noqa: SLF001
     assert failure.status == "empty"
+
+
+def test_hiding_the_automation_flag_is_googles_alone(playwright, clean_proxy_env):
+    """The shared browser's launch must not change because the google engine exists."""
+    clean_proxy_env.setenv("HTTPS_PROXY", "http://env-proxy.example:3128")
+    pw, fake_browser, _c = playwright()
+
+    with browser_mod.browser_session(Config()):
+        pass
+
+    assert browser_mod.HIDE_AUTOMATION_FLAG not in pw.chromium.launch_kwargs["args"]
+    assert pw.chromium.launch_kwargs["args"] == ["--no-sandbox"]
+    assert fake_browser.new_context_kwargs["viewport"] == {"width": 1280, "height": 900}
+    assert "no_viewport" not in fake_browser.new_context_kwargs
+
+
+def test_googles_launch_hides_the_flag_and_still_carries_the_explicit_proxy(playwright, clean_proxy_env):
+    """The GNOME proxy fix is not optional for the second browser either."""
+    clean_proxy_env.setenv("HTTPS_PROXY", "http://env-proxy.example:3128")
+    clean_proxy_env.setenv("NO_PROXY", "localhost")
+    pw, fake_browser, _c = playwright()
+
+    with browser_mod.browser_session(Config(), hide_automation=True):
+        pass
+
+    assert "--disable-blink-features=AutomationControlled" in pw.chromium.launch_kwargs["args"]
+    assert pw.chromium.launch_kwargs["proxy"] == {"server": "http://env-proxy.example:3128", "bypass": "localhost"}
+    assert pw.chromium.launch_kwargs["headless"] is True
+    # Python's `viewport=None` would be the 1280x720 default; `no_viewport` is the measured `viewport: null`.
+    assert fake_browser.new_context_kwargs["no_viewport"] is True
+    assert "viewport" not in fake_browser.new_context_kwargs
+    # Same user agent policy and certificate handling as the shared browser.
+    assert fake_browser.new_context_kwargs["user_agent"] == browser_mod.DEFAULT_UA
+    assert fake_browser.new_context_kwargs["ignore_https_errors"] is False
+
+
+def test_googles_launch_failures_are_engine_failures_too(playwright):
+    playwright(launch_raises=RuntimeError("Executable doesn't exist"))
+
+    with pytest.raises(EngineFailure) as exc, browser_mod.browser_session(Config(), hide_automation=True):
+        pass  # pragma: no cover
+
+    assert exc.value.status == "error"
+    assert "cannot launch chromium" in exc.value.detail

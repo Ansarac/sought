@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING
 
 from sought import config as config_mod
 from sought import net, state
-from sought.engines.base import BROWSER_ENGINES, GENERAL_ENGINES
+from sought.engines.base import BROWSER_ENGINES, GENERAL_ENGINES, OWN_BROWSER_ENGINES
 
 if TYPE_CHECKING:
     from sought.config import Config
-    from sought.state import Cooldown
+    from sought.state import Budget, Cooldown
 
 MIN_PYTHON = (3, 13)
 
@@ -67,6 +67,9 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
         probes = [Check("engines", ok=True, detail="skipped (--offline)", required=False)]
     else:
         probes = _engine_probes(cfg, chromium_ok=chromium.ok, cooling=cooling)
+    google = _google_line(cfg, offline=offline, chromium_ok=chromium.ok, cooling=cooling)
+    if google is not None:
+        probes.append(google)
 
     tls = _tls_note(cfg, probes=probes)
     if tls is not None:
@@ -311,7 +314,7 @@ def _route_note(cfg: Config, *, probes: list[Check]) -> Check | None:
 
 def _cert_failures(probes: list[Check]) -> list[str]:
     """Names of the browser engines whose probe failed on a certificate."""
-    wanted = {f"engine {name}" for name in BROWSER_ENGINES}
+    wanted = {f"engine {name}" for name in BROWSER_ENGINES | OWN_BROWSER_ENGINES}
     return [
         c.name.removeprefix("engine ")
         for c in probes
@@ -426,9 +429,11 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
     An engine in `cooling` is not asked — a probe is a real request, and
     asking a refusing engine early is what the cooldown prevents. Its line
     points at the cooldowns line rather than repeating it.
-    """
-    from sought.search import run as search_run
 
+    A disabled opt-in engine named in the order is not probed either, and it
+    counts as failed for the chain verdict: every search records an `error`
+    for it, so a chain of nothing else is a chain that answers nothing.
+    """
     cooled = {c.engine for c in cooling}
     checks: list[Check] = []
     probed = 0
@@ -436,30 +441,16 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
     for name in cfg.order:
         if name not in GENERAL_ENGINES:
             continue
-        if not chromium_ok and name in {"brave", "startpage"}:
-            checks.append(Check(f"engine {name}", ok=False, detail="skipped: no chromium", required=False))
+        if name == "google" and not cfg.google.enabled:
+            probed += 1
+            checks.append(Check("engine google", ok=False, detail=_google_disabled(in_order=True), required=False))
             continue
-        if name in cooled:
+        check, outcome = _probe(cfg, name, chromium_ok=chromium_ok, cooled=cooled)
+        checks.append(check)
+        if outcome == "probed":
+            probed += 1
+        elif outcome == "cooling":
             skipped_cooling.append(name)
-            checks.append(
-                Check(f"engine {name}", ok=False, detail="not probed: cooling down (see cooldowns)", required=False)
-            )
-            continue
-        probed += 1
-        # Never from the result cache: a replayed probe would report an engine
-        # as working without having asked it. Cooldowns still apply inside
-        # `run` too, should one have started since `cooling` was read.
-        payload = search_run("sought self test", config=cfg, source=name, cache="off")
-        attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
-        ok = attempt["status"] == "ok"
-        if ok:
-            note = f" — {attempt['detail']}" if attempt.get("detail") else ""
-            detail = f"{attempt.get('count', 0)} results{note}"
-        else:
-            detail = f"{attempt['status']} — {attempt.get('detail', '')}"
-        # An individual engine being down is exactly what the chain is for, so
-        # a probe failure is a warning; only a chain with nothing left is fatal.
-        checks.append(Check(f"engine {name}", ok=ok, detail=detail, required=False))
 
     # Only meaningful once something was actually asked. Reporting "every
     # engine failed" for engines that were skipped would blame the wrong thing;
@@ -473,6 +464,82 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
     if (probed or skipped_cooling) and not any(c.ok for c in checks):
         checks.append(Check("engine chain", ok=False, detail=_chain_failure(probed=probed, cooling=skipped_cooling)))
     return checks
+
+
+def _probe(cfg: Config, name: str, *, chromium_ok: bool, cooled: set[str]) -> tuple[Check, str]:
+    """Probe one general engine; also say whether it was "probed", "cooling" or "skipped"."""
+    from sought.search import run as search_run
+
+    if not chromium_ok and name in BROWSER_ENGINES | OWN_BROWSER_ENGINES:
+        return Check(f"engine {name}", ok=False, detail="skipped: no chromium", required=False), "skipped"
+    if name in cooled:
+        detail = "not probed: cooling down (see cooldowns)"
+        return Check(f"engine {name}", ok=False, detail=detail, required=False), "cooling"
+
+    before = state.budget(name, per_hour=cfg.google.max_per_hour) if name == "google" else None
+    # Never from the result cache: a replayed probe would report an engine
+    # as working without having asked it. Cooldowns still apply inside
+    # `run` too, should one have started since `cooling` was read.
+    payload = search_run("sought self test", config=cfg, source=name, cache="off")
+    attempt = payload["attempts"][-1] if payload["attempts"] else {"status": "error", "detail": "no attempt"}
+    ok = attempt["status"] == "ok"
+    if ok:
+        note = f" — {attempt['detail']}" if attempt.get("detail") else ""
+        detail = f"{attempt.get('count', 0)} results{note}"
+    else:
+        detail = f"{attempt['status']} — {attempt.get('detail', '')}"
+    if before is not None:
+        detail += _google_budget_note(cfg, before=before)
+    # An individual engine being down is exactly what the chain is for, so
+    # a probe failure is a warning; only a chain with nothing left is fatal.
+    return Check(f"engine {name}", ok=ok, detail=detail, required=False), "probed"
+
+
+GOOGLE_DISABLED = "disabled (opt-in: [google] enabled = true)"
+
+
+def _google_disabled(*, in_order: bool) -> str:
+    if not in_order:
+        return GOOGLE_DISABLED
+    return f"{GOOGLE_DISABLED} — but engines.order lists it, so every search reaching it records an error"
+
+
+def _google_budget_note(cfg: Config, *, before: Budget) -> str:
+    """Say what the google probe cost, since every probe spends the same budget searches do."""
+    after = state.budget("google", per_hour=cfg.google.max_per_hour)
+    spent = "this probe used one" if after.used > before.used else "this probe used none"
+    return f"; budget {after.describe()} ({spent})"
+
+
+def _google_line(cfg: Config, *, offline: bool, chromium_ok: bool, cooling: list[Cooldown]) -> Check | None:
+    """Report the opt-in google engine wherever the probes have not already.
+
+    Always said, unlike the TLS and cooldown notes: whether sought may hide
+    its automation flag from Google is a posture, not a fault, and a reader of
+    the report should not have to know the key exists to learn its value.
+    Disabled reads as a plain ✓ — it is the default — unless the order names
+    google, which makes it a warning. Enabled, it is probed (online, even
+    outside the order, since `--source google` reaches it) and the remaining
+    budget is shown, because a probe spends it.
+    """
+    in_order = "google" in cfg.order
+    if not cfg.google.enabled:
+        if in_order and not offline:
+            return None  # `_engine_probes` reported it
+        return Check("engine google", ok=not in_order, detail=_google_disabled(in_order=in_order), required=False)
+    if offline:
+        b = state.budget("google", per_hour=cfg.google.max_per_hour)
+        return Check(
+            "engine google",
+            ok=True,
+            detail=f"enabled (automation flag hidden), not probed (--offline); budget {b.describe()}",
+            required=False,
+        )
+    if in_order:
+        return None  # probed with the chain
+    check, _outcome = _probe(cfg, "google", chromium_ok=chromium_ok, cooled={c.engine for c in cooling})
+    check.detail += " [not in engines.order: reached only by --source google]"
+    return check
 
 
 def _chain_failure(*, probed: int, cooling: list[str]) -> str:

@@ -14,12 +14,21 @@ if TYPE_CHECKING:
 
 Status = Literal["ok", "rate_limited", "blocked", "empty", "timeout", "error"]
 
-GENERAL_ENGINES = ("brave", "startpage", "marginalia")
+GENERAL_ENGINES = ("brave", "startpage", "marginalia", "google")
 VERTICAL_SOURCES = ("wikipedia", "github", "hn", "stackoverflow", "npm", "pypi", "news")
 
-# Engines that need a real browser. Plain HTTP against these gets a 429 or a
-# bot-check page — verified, not assumed.
+# General engines that stay off unless the config file switches them on;
+# naming one in `engines.order` or `--source` is not enough on its own. Not in
+# the default order either. See `sought.engines.google` for why google is one.
+OPT_IN_ENGINES = frozenset({"google"})
+
+# Engines that borrow the chain's shared Chromium. Plain HTTP against these
+# gets a 429 or a bot-check page — verified, not assumed.
 BROWSER_ENGINES = frozenset({"brave", "startpage"})
+
+# Engines that need Chromium but launch their own, lazily, so that how the
+# shared one is launched never depends on them.
+OWN_BROWSER_ENGINES = frozenset({"google"})
 
 
 def all_source_names() -> tuple[str, ...]:
@@ -101,8 +110,8 @@ class EngineFailure(Exception):  # noqa: N818 — this is a value carrier, not a
 class Engine(Protocol):
     """What every backend implements.
 
-    `browser` is None for HTTP-only engines, and non-None for anything in
-    BROWSER_ENGINES.
+    `browser` is None for HTTP-only engines and for OWN_BROWSER_ENGINES, and
+    non-None for anything in BROWSER_ENGINES.
     """
 
     name: str
