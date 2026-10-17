@@ -63,11 +63,11 @@ it tells you *why* there is nothing. Statuses:
 | status | meaning | what to do |
 |---|---|---|
 | `ok` | answered | — |
-| `empty` | answered, matched nothing | reword the query |
+| `empty` | the engine said nothing matched | reword the query |
 | `rate_limited` | quota or bot wall, or still cooling down from one | it fell through to the next engine; fine |
 | `blocked` | network or engine refused | check `sought doctor` |
 | `timeout` | no response in time | retry, or raise `--timeout` |
-| `error` | unexpected failure | read `detail` |
+| `error` | unexpected failure, or `page not recognised` — the engine changed its layout and sought could not read it. Says nothing about the web | read `detail`; the chain already moved on. Persisting across runs ⇒ a sought bug worth reporting |
 
 If `results` is empty **and** `attempts` is empty, that is a bug — report it
 rather than concluding the web has no answer.
