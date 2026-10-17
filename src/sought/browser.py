@@ -1,7 +1,10 @@
 """Playwright lifecycle: one Chromium instance shared by the whole fallback chain.
 
 Launching Chromium costs about a second, so the chain opens it once and every
-browser engine borrows a page from the same context.
+browser engine borrows a page from the same context. The one exception is the
+opt-in `google` engine, which launches a separate Chromium with the automation
+flag hidden (`hide_automation`) so that nothing about how `brave` and
+`startpage` are launched changes when it is switched on.
 
 Also the home of `BOT_WALL_MARKERS`, the list of phrases that mean "blocked"
 on a page that arrived with an HTTP 200. That list is shared with the HTTP-only
@@ -11,6 +14,7 @@ would drift and the second copy would be the one nobody notices going stale.
 
 from __future__ import annotations
 
+import time
 from contextlib import ExitStack, contextmanager, suppress
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +25,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from sought.config import Config
+
+# Startpage's JavaScript proof-of-work interstitial ("Verifying your request...
+# Calculating... Difficulty: 6"). Unlike every other marker it resolves itself:
+# the page's own script computes the answer and moves on to the results, the
+# same as in any visitor's browser. Measured headless, with nothing spoofed:
+# 39 s. `goto` waits for it when asked to; still showing at the end of the
+# wait, it is a refusal like the rest.
+POW_CHALLENGE_MARKER = "verifying your request"
 
 # Phrases that mean "we know you are a bot", as served with an HTTP 200.
 BOT_WALL_MARKERS = (
@@ -37,7 +49,7 @@ BOT_WALL_MARKERS = (
     # Startpage's proof-of-work interstitial, served with a 200 and an empty
     # title. Caught live: until this was listed, it came out as `empty` and
     # exit 1, "the web has no answer", for a query nobody ever ran.
-    "verifying your request",
+    POW_CHALLENGE_MARKER,
 )
 
 
@@ -59,9 +71,24 @@ class Browser:
             page.close()
 
 
+# What `hide_automation` adds to the launch. Chromium sets
+# `navigator.webdriver = true` under automation, and Google refuses such a
+# browser per request (docs/findings/2026-10-egress-google-windows.md, §3-4).
+# This switch makes it report false. It is fingerprint evasion, used by the
+# opt-in `google` engine only, never by the chain's shared browser.
+HIDE_AUTOMATION_FLAG = "--disable-blink-features=AutomationControlled"
+
+
 @contextmanager
-def browser_session(config: Config) -> Iterator[Browser]:
+def browser_session(config: Config, *, hide_automation: bool = False) -> Iterator[Browser]:
     """Launch Chromium for the duration of the block.
+
+    `hide_automation` is for the opt-in `google` engine and nothing else: it
+    adds `HIDE_AUTOMATION_FLAG` to the launch and opens the context without a
+    fixed viewport, the combination measured to get past Google's
+    per-request check. Everything else — proxy, certificates, user agent,
+    timeouts, teardown — is the same code path, so the explicit-proxy fix
+    cannot be forgotten on one side.
 
     Every step of acquisition — importing Playwright, starting its driver,
     launching the browser, opening a context — is reported as
@@ -78,7 +105,7 @@ def browser_session(config: Config) -> Iterator[Browser]:
     """
     with ExitStack() as stack:
         try:
-            context = _acquire(stack, config)
+            context = _acquire(stack, config, hide_automation=hide_automation)
         except EngineFailure:
             raise
         except Exception as exc:  # Playwright raises many types; none of them may escape
@@ -88,7 +115,7 @@ def browser_session(config: Config) -> Iterator[Browser]:
         yield Browser(context, config.timeout_seconds * 1000)
 
 
-def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playwright BrowserContext
+def _acquire(stack: ExitStack, config: Config, *, hide_automation: bool) -> Any:  # noqa: ANN401 — BrowserContext
     """Start Playwright and open a context, registering each teardown as it goes.
 
     Teardown is registered step by step so that a failure halfway through
@@ -105,16 +132,21 @@ def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playw
     stack.callback(_close_quietly, pw.stop)
 
     try:
-        browser = pw.chromium.launch(**_launch_kwargs(config))
+        browser = pw.chromium.launch(**_launch_kwargs(config, hide_automation=hide_automation))
     except Exception as exc:  # Playwright raises many types for "no browser"
         msg = f"cannot launch chromium: {_first_line(exc)} (try: sought doctor --fix)"
         raise EngineFailure("error", msg) from exc
     stack.callback(_close_quietly, browser.close)
 
+    # Python's `viewport=None` means "the default 1280x720", not "none":
+    # `no_viewport` is the binding's spelling of the JS `viewport: null` that
+    # was measured. A fixed-viewport context was the second, weaker signal
+    # Google reacted to (findings §4).
+    screen: dict[str, Any] = {"no_viewport": True} if hide_automation else {"viewport": {"width": 1280, "height": 900}}
     context = browser.new_context(
         ignore_https_errors=config.browser_ignore_cert_errors,
         user_agent=DEFAULT_UA,
-        viewport={"width": 1280, "height": 900},
+        **screen,
     )
     stack.callback(_close_quietly, context.close)
 
@@ -122,10 +154,12 @@ def _acquire(stack: ExitStack, config: Config) -> Any:  # noqa: ANN401 — Playw
     return context
 
 
-def _launch_kwargs(config: Config) -> dict[str, Any]:
+def _launch_kwargs(config: Config, *, hide_automation: bool = False) -> dict[str, Any]:
     launch_args = ["--no-sandbox"]
     if config.browser_ignore_cert_errors:
         launch_args.append("--ignore-certificate-errors")
+    if hide_automation:
+        launch_args.append(HIDE_AUTOMATION_FLAG)
 
     kwargs: dict[str, Any] = {"headless": True, "args": launch_args}
     proxy_server = config.proxy.browser_server() or environment_proxy()
@@ -160,8 +194,34 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_BAD_REQUEST = 400
 
 
-def goto(page: Any, url: str, *, wait_for: str, selector_timeout_ms: int = SELECTOR_TIMEOUT_MS) -> None:  # noqa: ANN401
-    """Navigate and wait for the results container, classifying every failure."""
+def goto(  # noqa: PLR0913 — each keyword is one engine's need, all optional
+    page: Any,  # noqa: ANN401 — Playwright page
+    url: str,
+    *,
+    wait_for: str,
+    selector_timeout_ms: int = SELECTOR_TIMEOUT_MS,
+    challenge_wait_ms: int = 0,
+    on_arrival: Callable[[Any], None] | None = None,
+) -> float | None:
+    """Navigate and wait for the results container, classifying every failure.
+
+    `on_arrival` sees the page before its HTTP status is judged, for an engine
+    whose walls are best recognised by where they land (Google's `/sorry/`
+    arrives as a 429, and "HTTP 429" would hide which wall it was). It raises
+    EngineFailure to classify, or returns to carry on.
+
+    With `challenge_wait_ms`, a proof-of-work interstitial (`POW_CHALLENGE_MARKER`)
+    extends the wait to that many milliseconds from arrival, instead of being
+    reported as a bot wall the moment `selector_timeout_ms` runs out. Returns
+    the seconds spent getting past one, or None when there was none.
+
+    One navigation, then waiting. Nothing here reloads or re-requests:
+    `wait_for_selector` keeps polling across the navigation the challenge
+    script performs when it is done (Playwright retries the query whenever the
+    execution context is replaced), so the results page is picked up wherever
+    it comes from. The explicit timeouts also override the context default
+    (`engines.timeout_seconds`), which would otherwise cut the wait short.
+    """
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -172,18 +232,35 @@ def goto(page: Any, url: str, *, wait_for: str, selector_timeout_ms: int = SELEC
     except PlaywrightError as exc:
         raise EngineFailure("blocked", _first_line(exc)) from exc
 
+    if on_arrival is not None:
+        on_arrival(page)
+
     status = response.status if response is not None else 0
     if status == _HTTP_TOO_MANY_REQUESTS:
         raise EngineFailure("rate_limited", "HTTP 429")
     if status >= _HTTP_BAD_REQUEST:
         raise EngineFailure("blocked", f"HTTP {status}")
 
+    arrived = time.monotonic()
+    # Recognised up front when it is already in the served HTML, so the whole
+    # allowance goes to it. A challenge that only renders later is caught
+    # below, once the ordinary wait has run out.
+    challenged = challenge_wait_ms > 0 and _shows_challenge(page)
     try:
-        page.wait_for_selector(wait_for, timeout=selector_timeout_ms)
+        page.wait_for_selector(wait_for, timeout=challenge_wait_ms if challenged else selector_timeout_ms)
     except PlaywrightTimeout as exc:
-        # No results container. Distinguish a bot wall from a genuinely empty
-        # page before reporting, because they need opposite responses.
-        raise _classify_stuck_page(page) from exc
+        remaining_ms = challenge_wait_ms - int((time.monotonic() - arrived) * 1000)
+        if challenged or remaining_ms <= 0 or not _shows_challenge(page):
+            # No results container. Distinguish a bot wall from a genuinely
+            # empty page before reporting, because they need opposite responses.
+            raise _classify_stuck_page(page, challenge_wait_ms=challenge_wait_ms) from exc
+        challenged = True
+        try:
+            page.wait_for_selector(wait_for, timeout=remaining_ms)
+        except PlaywrightTimeout as again:
+            raise _classify_stuck_page(page, challenge_wait_ms=challenge_wait_ms) from again
+
+    return time.monotonic() - arrived if challenged else None
 
 
 def extract(page: Any, script: str, arg: Any, *, timeout_ms: int) -> Any:  # noqa: ANN401 — Playwright page and JSON
@@ -232,14 +309,31 @@ def classify_dead_page(body: str, *, empty_detail: str) -> EngineFailure:
     return EngineFailure("empty", empty_detail)
 
 
-def _classify_stuck_page(page: Any) -> EngineFailure:  # noqa: ANN401 — Playwright page
-    """Decide why the results container never appeared."""
-    try:
-        body = page.inner_text("body") or ""
-    except Exception:  # noqa: BLE001 — diagnostics must not raise
-        body = ""
+def _classify_stuck_page(page: Any, *, challenge_wait_ms: int = 0) -> EngineFailure:  # noqa: ANN401 — Playwright page
+    """Decide why the results container never appeared.
 
+    A proof-of-work challenge sought was told to wait for, and did, gets its
+    own detail: "bot wall" alone would hide that sought gave it the full
+    allowance, which is the difference between "raise the limit" and "this
+    engine is refusing you".
+    """
+    body = _body_text(page)
+    if challenge_wait_ms > 0 and POW_CHALLENGE_MARKER in body.lower():
+        detail = f"proof-of-work challenge not completed within {challenge_wait_ms // 1000}s"
+        return EngineFailure("rate_limited", detail)
     return classify_dead_page(body, empty_detail="results container never rendered")
+
+
+def _shows_challenge(page: Any) -> bool:  # noqa: ANN401 — Playwright page
+    return POW_CHALLENGE_MARKER in _body_text(page).lower()
+
+
+def _body_text(page: Any) -> str:  # noqa: ANN401 — Playwright page
+    """Read the page's visible text, or "" when it cannot be read. Diagnostics must not raise."""
+    try:
+        return page.inner_text("body") or ""
+    except Exception:  # noqa: BLE001 — diagnostics must not raise
+        return ""
 
 
 def _first_line(exc: Exception) -> str:

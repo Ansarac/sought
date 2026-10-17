@@ -12,7 +12,7 @@ import sys
 import pytest
 
 from sought import doctor, net
-from sought.config import Config, ProxyConfig
+from sought.config import Config, GoogleConfig, ProxyConfig
 
 # Captured before `stub_checks` can replace them, for the tests that want the real ones.
 _REAL_TLS_NOTE = doctor._tls_note  # noqa: SLF001
@@ -559,3 +559,109 @@ def test_a_chain_with_no_cooldowns_keeps_the_plain_detail(monkeypatch):
     monkeypatch.setattr(sought.search, "_GENERAL", {"marginalia": _refuse("blocked", "HTTP 403")})
     checks = doctor._engine_probes(Config(order=("marginalia",)), chromium_ok=True, cooling=[])  # noqa: SLF001
     assert checks[-1].detail == "every configured engine failed"
+
+
+# --- the opt-in google engine ------------------------------------------------
+
+GOOGLE_ON = Config(google=GoogleConfig(enabled=True))
+
+
+def _fake_google(monkeypatch):
+    """Install a google engine that answers and, like the real one, spends a budget slot."""
+    import sought.search
+    from sought import state
+    from sought.engines.base import Result, ResultList
+
+    def answer(*a, **k):
+        state.spend_budget("google")
+        return ResultList([Result("sought", "https://example.com")], detail="automation flag hidden (google.enabled)")
+
+    monkeypatch.setitem(sought.search._GENERAL, "google", answer)  # noqa: SLF001
+
+
+def test_a_default_install_says_google_is_off_and_how_to_turn_it_on(green, capsys):
+    assert doctor.run(Config(), offline=True) == 0
+    out = capsys.readouterr().out
+    assert "✓ engine google: disabled (opt-in: [google] enabled = true)" in out
+    assert "warning" not in out
+
+
+def test_google_named_in_the_order_but_disabled_is_a_warning(green, capsys):
+    assert doctor.run(Config(order=("brave", "google")), offline=True) == 0
+    out = capsys.readouterr().out
+    assert "! engine google: disabled (opt-in: [google] enabled = true)" in out
+    assert "engines.order lists it" in out
+
+
+def test_a_disabled_google_in_the_order_is_not_probed_and_counts_as_failed(monkeypatch):
+    import sought.search
+
+    monkeypatch.setattr(sought.search, "run", lambda *a, **k: pytest.fail("must not probe"))  # noqa: ARG005
+
+    checks = doctor._engine_probes(Config(order=("google",)), chromium_ok=True, cooling=[])  # noqa: SLF001
+
+    assert checks[0].name == "engine google"
+    assert checks[0].ok is False
+    assert checks[-1].name == "engine chain"
+    assert checks[-1].required is True
+
+
+def test_enabled_google_offline_shows_the_budget_without_probing(green, monkeypatch, capsys):
+    import sought.search
+
+    monkeypatch.setattr(sought.search, "run", lambda *a, **k: pytest.fail("must not probe offline"))  # noqa: ARG005
+
+    assert doctor.run(GOOGLE_ON, offline=True) == 0
+    out = capsys.readouterr().out
+    assert "engine google: enabled (automation flag hidden), not probed (--offline); budget 20/20 left this hour" in out
+
+
+def test_enabled_google_outside_the_order_is_probed_and_says_what_it_cost(monkeypatch):
+    _fake_google(monkeypatch)
+
+    check = doctor._google_line(GOOGLE_ON, offline=False, chromium_ok=True, cooling=[])  # noqa: SLF001
+
+    assert check is not None
+    assert check.ok is True
+    assert "1 results — automation flag hidden (google.enabled)" in check.detail
+    assert "budget 19/20 left this hour (this probe used one)" in check.detail
+    assert "not in engines.order" in check.detail
+
+
+def test_enabled_google_in_the_order_is_probed_with_the_chain(monkeypatch):
+    _fake_google(monkeypatch)
+    cfg = Config(order=("google",), google=GoogleConfig(enabled=True))
+
+    checks = doctor._engine_probes(cfg, chromium_ok=True, cooling=[])  # noqa: SLF001
+
+    assert [c.name for c in checks] == ["engine google"]
+    assert checks[0].ok is True
+    assert "(this probe used one)" in checks[0].detail
+    # Reported once: the extra line is only for google outside the order.
+    assert doctor._google_line(cfg, offline=False, chromium_ok=True, cooling=[]) is None  # noqa: SLF001
+
+
+def test_a_google_probe_over_budget_says_it_was_not_asked_and_used_nothing(monkeypatch):
+    from sought import state
+
+    _fake_google(monkeypatch)
+    cfg = Config(google=GoogleConfig(enabled=True, max_per_hour=1))
+    state.spend_budget("google")
+
+    check = doctor._google_line(cfg, offline=False, chromium_ok=True, cooling=[])  # noqa: SLF001
+
+    assert check is not None
+    assert check.ok is False
+    assert "not asked" in check.detail
+    assert "(this probe used none)" in check.detail
+
+
+def test_google_without_chromium_is_skipped_not_probed(monkeypatch):
+    import sought.search
+
+    monkeypatch.setattr(sought.search, "run", lambda *a, **k: pytest.fail("must not probe"))  # noqa: ARG005
+
+    check = doctor._google_line(GOOGLE_ON, offline=False, chromium_ok=False, cooling=[])  # noqa: SLF001
+
+    assert check is not None
+    assert "skipped: no chromium" in check.detail

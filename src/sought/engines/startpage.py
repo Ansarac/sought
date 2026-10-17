@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote_plus
 
 from sought.browser import extract, goto
-from sought.engines.base import EngineFailure, Result
+from sought.engines.base import EngineFailure, Result, ResultList
 
 if TYPE_CHECKING:
     from sought.browser import Browser
@@ -60,10 +60,19 @@ def search(query: str, *, config: Config, browser: Browser | None) -> list[Resul
 
     url = f"https://www.startpage.com/sp/search?query={quote_plus(query)}"
     with browser.page() as page:
-        goto(page, url, wait_for=_RESULTS_CONTAINER)
+        # Startpage often answers with a JavaScript proof-of-work page first.
+        # The browser solves it unaided, exactly as any visitor's does; sought
+        # only has to wait long enough instead of calling it a bot wall.
+        waited = goto(
+            page,
+            url,
+            wait_for=_RESULTS_CONTAINER,
+            challenge_wait_ms=config.challenge_wait_seconds * 1000,
+        )
 
         # A challenge page can still render .w-gl-ish markup, so confirm the
-        # document title before trusting anything on the page.
+        # document title before trusting anything on the page. After the
+        # wait, so it is the final page's title that is judged.
         doc_title = page.title() or ""
         if not _GOOD_TITLE.search(doc_title):
             raise EngineFailure("blocked", f"unexpected page title {doc_title!r}")
@@ -73,4 +82,6 @@ def search(query: str, *, config: Config, browser: Browser | None) -> list[Resul
     results = [Result(title=r["title"], url=r["url"], snippet=r["snippet"]) for r in rows][: config.limit]
     if not results:
         raise EngineFailure("empty", "results container rendered but held no results")
-    return results
+    # On the record: it explains a search that took most of a minute.
+    note = f"passed proof-of-work challenge in {round(waited)}s" if waited is not None else ""
+    return ResultList(results, detail=note)

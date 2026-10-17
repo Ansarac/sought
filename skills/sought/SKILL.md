@@ -72,6 +72,14 @@ it tells you *why* there is nothing. Statuses:
 If `results` is empty **and** `attempts` is empty, that is a bug — report it
 rather than concluding the web has no answer.
 
+**An `ok` attempt can carry a `detail` too.** It is something worth knowing
+about an answer that did arrive. `startpage` with `passed proof-of-work
+challenge in 39s` means Startpage made the browser compute a JavaScript
+challenge first; it explains a search that took most of a minute, and the
+results are as good as any. If the challenge does not finish in time (60 s by
+default), the attempt is `rate_limited` with `proof-of-work challenge not
+completed within 60s` and the chain moved on.
+
 **Cooldowns.** After an engine answers `rate_limited`, sought leaves it alone
 for a while (10 minutes by default) instead of asking again and prolonging the
 ban. It still appears in `attempts`, as `rate_limited` with a detail like
@@ -118,6 +126,32 @@ about a second, and it is not affected by any bot wall.
 `startpage` reaches the Google index. `marginalia` is an independent crawl that
 favours small, non-commercial, technical sites — better for essays and
 documentation, weaker for anything commercial.
+
+### `google` (opt-in, usually off)
+
+The user may have switched on a `google` engine; it is off by default and
+never in the default chain. Do not ask for `--source google` unless the user
+has said it is enabled — if it is not, you get one `error` attempt whose
+detail names the config key, and exit code 2. Do not enable it yourself:
+it hides the browser's automation flag from Google, and heavy use from a
+shared network can get that network's IP blocked by Google for everyone on it.
+That is the user's decision.
+
+When google results do appear, read them like this:
+
+- The `ok` attempt's detail says `automation flag hidden (google.enabled)`.
+  That is a disclosure, not an error; the results are real Google results.
+- Their URLs are normally the real destinations: sought resolves Google's
+  `https://www.google.com/goto?url=...` redirects itself. Any it could not
+  resolve stay as `/goto` links (they still work, with one redirect hop), and
+  the detail says how many, e.g. `2 of 9 result URLs left as google.com/goto
+  redirects`.
+- `rate_limited` with `local budget 20/h used, next slot at 14:32 — not
+  asked` means sought held itself back under the user's hourly limit; Google
+  was not asked. Like a cooldown, it is not a refusal, and retrying before
+  that time gets the same answer. Use another engine.
+- `rate_limited` with `google /sorry wall` is Google refusing; a cooldown
+  follows.
 
 ## Suggested workflow
 

@@ -7,17 +7,28 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sought.browser import Browser
     from sought.config import Config
 
 Status = Literal["ok", "rate_limited", "blocked", "empty", "timeout", "error"]
 
-GENERAL_ENGINES = ("brave", "startpage", "marginalia")
+GENERAL_ENGINES = ("brave", "startpage", "marginalia", "google")
 VERTICAL_SOURCES = ("wikipedia", "github", "hn", "stackoverflow", "npm", "pypi", "news")
 
-# Engines that need a real browser. Plain HTTP against these gets a 429 or a
-# bot-check page — verified, not assumed.
+# General engines that stay off unless the config file switches them on;
+# naming one in `engines.order` or `--source` is not enough on its own. Not in
+# the default order either. See `sought.engines.google` for why google is one.
+OPT_IN_ENGINES = frozenset({"google"})
+
+# Engines that borrow the chain's shared Chromium. Plain HTTP against these
+# gets a 429 or a bot-check page — verified, not assumed.
 BROWSER_ENGINES = frozenset({"brave", "startpage"})
+
+# Engines that need Chromium but launch their own, lazily, so that how the
+# shared one is launched never depends on them.
+OWN_BROWSER_ENGINES = frozenset({"google"})
 
 
 def all_source_names() -> tuple[str, ...]:
@@ -36,6 +47,25 @@ class Result:
     def as_dict(self) -> dict[str, str]:
         """Serialise for the JSON envelope."""
         return {"title": self.title, "url": self.url, "snippet": self.snippet}
+
+
+class ResultList(list[Result]):
+    """Results, plus a note the engine wants on its `ok` attempt.
+
+    An answer can come with a fact the audit trail should carry even though
+    nothing failed: Startpage made sought wait out a proof-of-work challenge
+    (which explains a 40-second search), Google was reached with the automation
+    flag hidden (which a reader of the results is entitled to know). Without
+    this the chain records a bare `ok` and the fact is lost.
+
+    A list subclass rather than a new return type, so every engine and test
+    stub that returns a plain list keeps working, with no note.
+    """
+
+    def __init__(self, results: Iterable[Result] = (), *, detail: str = "") -> None:
+        """Wrap results with the detail for their `ok` attempt."""
+        super().__init__(results)
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -80,8 +110,8 @@ class EngineFailure(Exception):  # noqa: N818 — this is a value carrier, not a
 class Engine(Protocol):
     """What every backend implements.
 
-    `browser` is None for HTTP-only engines, and non-None for anything in
-    BROWSER_ENGINES.
+    `browser` is None for HTTP-only engines and for OWN_BROWSER_ENGINES, and
+    non-None for anything in BROWSER_ENGINES.
     """
 
     name: str

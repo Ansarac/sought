@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sought import state
 from sought.browser import browser_session
-from sought.engines import brave, marginalia, startpage, verticals
+from sought.engines import brave, google, marginalia, startpage, verticals
 from sought.engines.base import (
     BROWSER_ENGINES,
     GENERAL_ENGINES,
@@ -19,6 +19,7 @@ from sought.engines.base import (
     Attempt,
     EngineFailure,
     Result,
+    ResultList,
     detect_low_relevance,
 )
 from sought.errors import UsageError
@@ -32,6 +33,8 @@ _GENERAL = {
     "brave": brave.search,
     "startpage": startpage.search,
     "marginalia": marginalia.search,
+    # Opt-in, and never in the default order; gated by `_not_asked`.
+    "google": google.search,
 }
 
 # One spelling, used by both the chain and the single-source path. The engine
@@ -74,9 +77,9 @@ def _single(query: str, *, config: Config, source: str) -> dict[str, Any]:
     if source in VERTICAL_SOURCES:
         results = _attempt(attempts, source, lambda: verticals.search(source, query, config=config))
     elif source in GENERAL_ENGINES:
-        cooling = state.cooling_down([source], config=config)
-        if source in cooling:
-            attempts.append(cooling[source])
+        skips = _not_asked([source], config=config)
+        if source in skips:
+            attempts.append(skips[source])
             return _finish(query, attempts, [])
         with ExitStack() as stack:
             browser = _browser_or_none(stack, config, needed=source in BROWSER_ENGINES, attempts=attempts)
@@ -99,16 +102,17 @@ def _chain(query: str, *, config: Config) -> dict[str, Any]:
         msg = f"engines.order lists no known engine (known: {', '.join(GENERAL_ENGINES)})"
         raise UsageError(msg)
 
-    cooling = state.cooling_down(order, config=config)
+    skips = _not_asked(order, config=config)
     with ExitStack() as stack:
         # Chromium is the expensive part of a search; launching it only to
-        # skip every engine that would use it is pure cost.
-        needs_browser = any(e in BROWSER_ENGINES and e not in cooling for e in order)
+        # skip every engine that would use it is pure cost. Engines with a
+        # browser of their own (google) launch it themselves, only when asked.
+        needs_browser = any(e in BROWSER_ENGINES and e not in skips for e in order)
         browser = _browser_or_none(stack, config, needed=needs_browser, attempts=attempts)
 
         for name in order:
-            if name in cooling:
-                attempts.append(cooling[name])
+            if name in skips:
+                attempts.append(skips[name])
                 continue
             if browser is None and name in BROWSER_ENGINES:
                 attempts.append(Attempt(name, "error", _NO_BROWSER))
@@ -118,6 +122,29 @@ def _chain(query: str, *, config: Config) -> dict[str, Any]:
                 return _finish(query, attempts, results)
 
     return _finish(query, attempts, [])
+
+
+def _not_asked(names: list[str], *, config: Config) -> dict[str, Attempt]:
+    """Return a ready-made attempt for every engine this search must not ask, by name.
+
+    Cooldowns for all of them; for google also the opt-in switch and the
+    hourly budget, checked here so that a skip never costs a Chromium launch.
+    Disabled wins over everything, since nothing else matters until it is
+    switched on; a cooldown wins over the budget, since it is the engine's own
+    refusal and the more useful thing to report.
+
+    None of these reach `state.note_outcome`. Being skipped is not a refusal,
+    and a budget skip that started a cooldown would later be reported as one.
+    """
+    skips = state.cooling_down(names, config=config)
+    if google.NAME in names:
+        if not config.google.enabled:
+            skips[google.NAME] = Attempt(google.NAME, "error", google.DISABLED_DETAIL)
+        elif google.NAME not in skips:
+            spent = state.over_budget(google.NAME, per_hour=config.google.max_per_hour)
+            if spent is not None:
+                skips[google.NAME] = spent
+    return skips
 
 
 def _browser_or_none(stack: ExitStack, config: Config, *, needed: bool, attempts: list[Attempt]) -> Browser | None:
@@ -173,8 +200,9 @@ def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # 
         attempts.append(Attempt(name, "empty", "returned no results"))
         return []
 
-    attempts.append(Attempt(name, "ok", count=len(results)))
-    return results
+    detail = results.detail if isinstance(results, ResultList) else ""
+    attempts.append(Attempt(name, "ok", detail, count=len(results)))
+    return list(results)
 
 
 def _finish(query: str, attempts: list[Attempt], results: list[Result]) -> dict[str, Any]:

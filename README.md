@@ -105,8 +105,9 @@ opposite responses: reword the query, versus wait or use another engine.
 Both reduce the load sought itself puts on the engines. Neither removes
 anything from the audit trail.
 
-**Cooldowns.** When `brave`, `startpage` or `marginalia` answers
-`rate_limited`, sought leaves that engine alone for `engines.cooldown_seconds`
+**Cooldowns.** When `brave`, `startpage`, `marginalia` or (if enabled)
+`google` answers `rate_limited`, sought leaves that engine alone for
+`engines.cooldown_seconds`
 (default 600). Asking again seconds after a refusal does not get an answer —
 on a shared egress IP it prolongs the ban for everyone behind it, and each
 refused browser engine costs a selector timeout besides. A skipped engine is
@@ -191,12 +192,83 @@ silently swapped for something else.
 `pypi` resolves an exact package name only — PyPI removed its full-text search
 API, and sought says so rather than returning nothing.
 
+## Google (opt-in)
+
+There is a fourth general engine, `google`, and it is **off by default**. It
+exists because its owner decided to offer it; read this before switching it on.
+
+Google refuses automated browsers per request. Measured over a shared
+datacenter egress IP: a real browser with no cookies got results, every
+Playwright-launched Chromium was sent to `/sorry/`, and the trigger was
+`navigator.webdriver` — not the IP, not the user agent
+([findings](docs/findings/2026-10-egress-google-windows.md), §3–4). The
+`google` engine launches its own headless Chromium with
+`--disable-blink-features=AutomationControlled`, which hides that flag. That
+is fingerprint evasion against Google's policy on automated queries. It works
+today; Google can close the gap any day, and the engine will then report
+`rate_limited`.
+
+**The risk is not only yours.** Heavy automated use from one NAT or
+datacenter egress IP can make Google escalate from refusing one browser to
+blocking the IP — for everyone behind it. So the engine has a local budget,
+`max_per_hour` (default 20), a sliding hour checked before Chromium is even
+launched; once it is spent, google appears in the audit trail as
+`rate_limited` with `local budget 20/h used, next slot at 14:32 — not asked`.
+A real `/sorry` page is `rate_limited` too, and starts the usual cooldown.
+`sought config --clear-state` does not reset the budget.
+
+To use it, set `enabled = true` **and** either add `"google"` to
+`engines.order` or ask for it explicitly:
+
+```toml
+[google]
+enabled = true
+max_per_hour = 20
+
+[engines]
+order = ["brave", "startpage", "google", "marginalia"]   # optional
+```
+
+```bash
+sought "rust tokio select macro" --source google
+```
+
+Asked for while disabled, it is recorded rather than skipped silently, and
+the detail names the key to set:
+
+```json
+{"engine": "google", "status": "error",
+ "detail": "disabled — google is opt-in; set `enabled = true` under [google] in the config file (...)"}
+```
+
+What changes when it is on, and what does not:
+
+- Only google's own browser hides the flag. `brave` and `startpage` launch
+  exactly as before, and google's Chromium is launched only when google is
+  actually asked (enabled, not cooling down, within budget).
+- Every answer says what was done:
+  `{"engine": "google", "status": "ok", "count": 9, "detail": "automation flag hidden (google.enabled)"}`.
+- **Result links are resolved for you.** Google now serves organic results as
+  `https://www.google.com/goto?url=<token>`, an encrypted token; the
+  destination URL is nowhere in the page. sought asks each token where it
+  leads (one small request to `/goto` per result, never to `/search`, not
+  counted against the budget) and reports the real URL. A token that does not
+  resolve stays a working `/goto` link, and the detail says how many, e.g.
+  `…; 2 of 9 result URLs left as google.com/goto redirects`.
+- A Google page without results is `empty` only when Google says "did not
+  match any documents". Anything else it did not recognise is `error`, never
+  a claim that the web has no answer.
+- `doctor` reports google on every run: `disabled (opt-in: [google] enabled =
+  true)`, or, when enabled, a live probe — which spends one slot of the
+  budget, and says so — followed by what is left.
+
 ## Terms of use
 
-`sought` drives the Brave and Startpage result pages through a real browser.
-Both services' terms restrict automated querying of their result pages; Brave
-offers an official Search API for programmatic access, which is the supported
-route for anything beyond occasional interactive use. Marginalia is an
+`sought` drives the Brave and Startpage result pages through a real browser,
+and, if you enable it, Google's. All three services' terms restrict automated
+querying of their result pages; Brave offers an official Search API for
+programmatic access, which is the supported route for anything beyond
+occasional interactive use. Marginalia is an
 independent search engine and publishes an API of its own. The vertical sources
 are documented public APIs. You are responsible for your own compliance with
 whichever services you enable.
@@ -205,9 +277,23 @@ Worth stating plainly, because it is a design decision and not an oversight:
 when sought hits a bot wall it does not try to get past it. The markers in
 `BOT_WALL_MARKERS` (`src/sought/browser.py`) turn the wall into a
 `rate_limited` attempt in the audit trail and the chain falls through to the
-next engine. There is no retry loop, no fingerprint spoofing, and no CAPTCHA
-solving. A refusal is a result like any other, and recording it is more useful
-than defeating it.
+next engine. There is no retry loop and no CAPTCHA solving, for any engine,
+and no fingerprint spoofing for the engines on by default. A refusal is a
+result like any other, and recording it is more useful than defeating it. The
+single exception is the opt-in `google` engine above, which hides one
+automation flag in its own browser when — and only when — you switch it on,
+and says so on every answer.
+
+One page is not a refusal, and sought waits for it instead. Startpage often
+answers first with "Verifying your request... Calculating... Difficulty: 6" —
+a JavaScript proof-of-work the page runs in every visitor's browser before it
+moves on to the results by itself. sought's browser runs it like any other,
+unmodified; sought only waits, for up to `engines.challenge_wait_seconds`
+(default 60) after one navigation, with no reload and no second request.
+Measured headless: the results appeared after 39 s. The wait is on the
+record either way — `ok` with `"detail": "passed proof-of-work challenge in
+39s"`, or `rate_limited` with `"proof-of-work challenge not completed within
+60s"` — so a slow search is explained rather than mysterious.
 
 ## Configuration
 
@@ -233,6 +319,7 @@ order = ["brave", "startpage", "marginalia"]
 timeout_seconds = 30
 limit = 10
 cooldown_seconds = 600   # leave a rate-limited engine alone this long; 0 disables
+challenge_wait_seconds = 60  # how long to let Startpage's proof-of-work page finish
 
 [cache]
 ttl_seconds = 900        # replay identical successful searches this long; 0 disables
@@ -240,6 +327,10 @@ ttl_seconds = 900        # replay identical successful searches this long; 0 dis
 [tls]
 system_trust = true
 browser_ignore_cert_errors = false
+
+[google]                 # opt-in; see "Google (opt-in)" above before changing
+enabled = false
+max_per_hour = 20
 ```
 
 Setting a proxy here passes it to both transports explicitly. Left empty, each

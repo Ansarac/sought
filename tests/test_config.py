@@ -61,6 +61,16 @@ def test_partial_file_keeps_defaults_for_the_rest(tmp_path):
         "[engines]\ncooldown_seconds = true\n",
         "[engines]\ncooldown_seconds = 1.5\n",
         "[cache]\nttl_seconds = -1\n",
+        "[engines]\nchallenge_wait_seconds = 0\n",
+        "[engines]\nchallenge_wait_seconds = -5\n",
+        "[engines]\nchallenge_wait_seconds = true\n",
+        "[engines]\nchallenge_wait_seconds = '60'\n",
+        "google = true\n",
+        "[google]\nenabled = 'yes'\n",
+        "[google]\nenabled = 1\n",
+        "[google]\nmax_per_hour = 0\n",
+        "[google]\nmax_per_hour = -1\n",
+        "[google]\nmax_per_hour = true\n",
         "[cache]\nttl_seconds = 'long'\n",
         "cache = 5\n",
         "[engines]\norder = [1, 2]\n",
@@ -109,6 +119,38 @@ def test_the_written_default_parses_back_to_the_builtin_defaults(tmp_path):
     assert loaded.browser_ignore_cert_errors == builtin.browser_ignore_cert_errors
     assert loaded.cooldown_seconds == builtin.cooldown_seconds
     assert loaded.cache_ttl_seconds == builtin.cache_ttl_seconds
+    assert loaded.challenge_wait_seconds == builtin.challenge_wait_seconds
+    assert loaded.google == builtin.google
+
+
+def test_google_is_off_by_default_and_not_in_the_default_order():
+    cfg = Config()
+    assert cfg.google.enabled is False
+    assert cfg.google.max_per_hour == 20
+    assert "google" not in cfg.order
+
+
+def test_the_google_table_is_read(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[google]\nenabled = true\nmax_per_hour = 5\n", encoding="utf-8")
+    cfg = load(path)
+    assert (cfg.google.enabled, cfg.google.max_per_hour) == (True, 5)
+
+
+def test_the_template_explains_the_google_trade_off_before_the_switch():
+    template = config_mod.DEFAULT_CONFIG_TEMPLATE
+    section = template[template.index("[google]") :]
+    for phrase in ("--disable-blink-features=AutomationControlled", "fingerprint evasion", "egress IP", "max_per_hour"):
+        assert phrase in section
+    assert section.index("fingerprint evasion") < section.index("enabled = false")
+
+
+def test_the_challenge_wait_is_read_and_defaults_to_a_minute(tmp_path):
+    """39 s was measured; the default leaves room above that."""
+    assert Config().challenge_wait_seconds == 60
+    path = tmp_path / "config.toml"
+    path.write_text("[engines]\nchallenge_wait_seconds = 90\n", encoding="utf-8")
+    assert load(path).challenge_wait_seconds == 90
 
 
 def test_cooldown_and_cache_ttl_are_read(tmp_path):

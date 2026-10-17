@@ -22,6 +22,8 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_LIMIT = 10
 DEFAULT_COOLDOWN = 600
 DEFAULT_CACHE_TTL = 900
+DEFAULT_CHALLENGE_WAIT = 60
+DEFAULT_GOOGLE_BUDGET = 20
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # sought configuration — https://github.com/Ansarac/sought
@@ -49,6 +51,14 @@ limit = 10
 # `rate_limited` with "cooling down ... not asked this time". 0 disables.
 # `sought config --clear-state` ends every cooldown early.
 cooldown_seconds = 600
+# Startpage often answers first with "Verifying your request... Calculating...",
+# a JavaScript proof-of-work. The browser completes it by itself — it is doing
+# exactly what the site asks every visitor's browser to do; nothing is spoofed,
+# solved or retried by sought — and the results follow. Measured: 39 s. This is
+# how long sought waits for that, from the page's arrival, before recording
+# `rate_limited` ("proof-of-work challenge not completed within ...s").
+# Separate from timeout_seconds, which would otherwise cut the wait short.
+challenge_wait_seconds = 60
 
 [cache]
 # Replay an identical search (same query, source, order and limit) from a
@@ -79,7 +89,41 @@ system_trust = true
 # source keep working — they go through the `requests` path above, which
 # verifies against the OS trust store and is unaffected.
 browser_ignore_cert_errors = false
+
+[google]
+# OFF UNLESS YOU MEAN IT. Read all of this before switching it on.
+#
+# What it does: adds a `google` engine that queries google.com in a separate
+# headless Chromium launched with --disable-blink-features=AutomationControlled,
+# which hides navigator.webdriver — the signal Google uses to refuse automated
+# browsers, per request. That is fingerprint evasion against Google's policy on
+# automated queries, and nothing else in sought does it: brave, startpage and
+# marginalia are launched exactly as they are with this off. Google can close
+# the gap any day, and this engine will then simply report `rate_limited`.
+#
+# The risk is not only yours. Heavy automated use from one NAT or datacenter
+# egress IP can make Google escalate from refusing one browser to blocking the
+# IP — for everyone behind it, colleagues included. That is why max_per_hour
+# exists: a local budget checked before Chromium is even launched (a skipped
+# request appears as `rate_limited` "... — not asked"). Keep it low. A
+# `rate_limited` from Google (its /sorry page) starts the usual cooldown.
+#
+# To use it: set enabled = true, AND either add "google" to [engines] order
+# (it is not in the default order) or ask for it with `--source google`. Its
+# results are disclosed in the audit trail as "automation flag hidden
+# (google.enabled)", and their links are google.com/goto redirects: Google no
+# longer puts the destination URL in the page.
+enabled = false
+max_per_hour = 20
 """
+
+
+@dataclass(frozen=True)
+class GoogleConfig:
+    """The opt-in google engine. See the [google] comment in DEFAULT_CONFIG_TEMPLATE."""
+
+    enabled: bool = False
+    max_per_hour: int = DEFAULT_GOOGLE_BUDGET
 
 
 @dataclass(frozen=True)
@@ -139,8 +183,10 @@ class Config:
     limit: int = DEFAULT_LIMIT
     cooldown_seconds: int = DEFAULT_COOLDOWN
     cache_ttl_seconds: int = DEFAULT_CACHE_TTL
+    challenge_wait_seconds: int = DEFAULT_CHALLENGE_WAIT
     system_trust: bool = True
     browser_ignore_cert_errors: bool = False
+    google: GoogleConfig = field(default_factory=GoogleConfig)
     source_path: Path | None = None
 
 
@@ -178,6 +224,7 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
     engines_raw = _table(raw, "engines", path)
     tls_raw = _table(raw, "tls", path)
     cache_raw = _table(raw, "cache", path)
+    google_raw = _table(raw, "google", path)
 
     order = tuple(_str_list(engines_raw.get("order", DEFAULT_ORDER), "engines.order", path))
     if not order:
@@ -207,11 +254,28 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
             "cache.ttl_seconds",
             path,
         ),
+        # Positive, not "0 disables": waiting zero seconds is not a different
+        # policy, it is the old bug — calling a challenge in progress a refusal.
+        challenge_wait_seconds=positive_int(
+            engines_raw.get("challenge_wait_seconds", DEFAULT_CHALLENGE_WAIT),
+            "engines.challenge_wait_seconds",
+            path,
+        ),
         system_trust=_bool(tls_raw.get("system_trust", True), "tls.system_trust", path),
         browser_ignore_cert_errors=_bool(
             tls_raw.get("browser_ignore_cert_errors", False),
             "tls.browser_ignore_cert_errors",
             path,
+        ),
+        google=GoogleConfig(
+            enabled=_bool(google_raw.get("enabled", False), "google.enabled", path),
+            # Positive: a budget of 0 is `enabled = false` said confusingly,
+            # and every search would then record a skip for nothing.
+            max_per_hour=positive_int(
+                google_raw.get("max_per_hour", DEFAULT_GOOGLE_BUDGET),
+                "google.max_per_hour",
+                path,
+            ),
         ),
         source_path=path,
     )
