@@ -8,6 +8,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Transitive packages too. The default is direct dependencies only, which
+    # left certifi — pulled in by requests — on a bundle that still trusted
+    # revoked emSign intermediates (GHSA-6q48-6c7w-9gw2) for weeks.
+    allow:
+      - dependency-type: all
     groups:
       python-dependencies:
         patterns: ["*"]
