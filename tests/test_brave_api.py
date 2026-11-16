@@ -218,9 +218,31 @@ def test_429_is_rate_limited_and_carries_the_quota(http, response, saved):
         brave_api.search("x", config=KEYED)
 
     assert exc.value.status == "rate_limited"
+    # No X-RateLimit-Policy: the windows are numbered, not guessed.
     assert exc.value.detail == (
-        "HTTP 429 (RATE_LIMITED) — quota limit 1, 2000; remaining 0, 0; reset in s 1, 1209600 "
-        "(per-second, per-month windows)"
+        "HTTP 429 (RATE_LIMITED) — quota — window 1: limit 1, remaining 0, resets in 1s, exhausted; "
+        "window 2: limit 2000, remaining 0, resets in 14d, exhausted"
+    )
+
+
+def test_429_names_windows_from_the_policy_and_does_not_call_a_zero_limit_spent(http, response, saved):
+    # The header values a working key returned, measured 2026-11-16: the
+    # 30-day window reads limit 0 / remaining 0 while every request succeeded.
+    headers = {
+        "X-RateLimit-Limit": "50, 0",
+        "X-RateLimit-Remaining": "0, 0",
+        "X-RateLimit-Reset": "1, 1263310",
+        "X-RateLimit-Policy": "50;w=1, 0;w=2592000",
+    }
+    http(response(429, saved("brave_api_429.synthetic.json"), headers=headers))
+
+    with pytest.raises(EngineFailure) as exc:
+        brave_api.search("x", config=KEYED)
+
+    assert exc.value.status == "rate_limited"
+    assert exc.value.detail == (
+        "HTTP 429 (RATE_LIMITED) — quota — 1s window: limit 50, remaining 0, resets in 1s, exhausted; "
+        "30d window: no cap reported (limit 0), resets in 14d"
     )
 
 

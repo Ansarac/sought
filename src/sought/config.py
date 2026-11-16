@@ -8,6 +8,7 @@ returns, so everything below stops at the config-file level.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -355,6 +356,57 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
         ),
         source_path=path,
     )
+
+
+REDACTED = "***"
+_MIN_SECRET_REPLACE = 4
+REDACTION_NOTE = "# sought config: secrets in this file are shown as *** (api_key, proxy credentials)\n"
+
+# A quoted URL with credentials, wherever it sits. Greedy up to the last `@`
+# inside the quotes, because a password may itself contain `@` and `:`.
+_URL_USERINFO_RE = re.compile(r"""(["'])([A-Za-z][A-Za-z0-9+.-]*://)[^"'\s]*@([^"'@\s]*)\1""")
+# `api_key = "..."` or `api_key = '...'`, non-empty, on its own line.
+_API_KEY_LINE_RE = re.compile(r"""^(\s*api_key\s*=\s*)(["'])[^"'\n]+\2""", re.MULTILINE)
+
+
+def redact_secrets(text: str) -> str:
+    """Return the config file's text with every secret replaced by `***`.
+
+    `sought config` prints the file, and like doctor's output that is the kind
+    of thing pasted into a bug report. Measured: before this, it printed
+    `[brave_api] api_key` verbatim. Two layers, because a missed secret is the
+    one failure that cannot be taken back: patterns for the `api_key` line and
+    for credentials in any quoted URL, then — when the file parses — every
+    secret value the parsed config holds is replaced wherever it still
+    appears, whatever the formatting. A line naming what was hidden goes on
+    top as a TOML comment, so the output stays a valid config file.
+    """
+    redacted = _API_KEY_LINE_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}{m.group(2)}", text)
+    redacted = _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}@{m.group(3)}{m.group(1)}", redacted)
+    for secret in _secret_values(text):
+        redacted = redacted.replace(secret, REDACTED)
+    return redacted if redacted == text else REDACTION_NOTE + redacted
+
+
+def _secret_values(text: str) -> list[str]:
+    """Return the secret strings a config file holds, longest first; none if it does not parse."""
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []
+    secrets: list[str] = []
+    brave_api = raw.get("brave_api")
+    if isinstance(brave_api, dict) and isinstance(brave_api.get("api_key"), str):
+        secrets.append(brave_api["api_key"].strip())
+    proxy = raw.get("proxy")
+    if isinstance(proxy, dict):
+        for name in ("http", "https"):
+            url = proxy.get(name)
+            if isinstance(url, str) and "://" in url and "@" in url.partition("://")[2]:
+                secrets.append(url.partition("://")[2].rpartition("@")[0])
+    # A value this short would be replaced inside unrelated words; the
+    # patterns above already cover it where it is a secret.
+    return sorted((s for s in secrets if len(s) >= _MIN_SECRET_REPLACE), key=len, reverse=True)
 
 
 def _table(raw: dict, key: str, path: Path | None) -> dict:
