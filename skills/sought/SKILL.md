@@ -97,7 +97,7 @@ page could not be read — use `sought fetch`:
 
 ```bash
 sought fetch https://docs.python.org/3/library/textwrap.html --pretty
-sought fetch <url> --pretty --max-chars 0 > "${TMPDIR:-/tmp}/page.md"   # whole page, read in parts
+f=$(mktemp) && sought fetch <url> --pretty --max-chars 0 > "$f"; echo "$f"   # whole page, read in parts
 ```
 
 `--pretty` prints the markdown itself: a status line, the content, and a last
@@ -105,14 +105,16 @@ line that says whether it was cut. Content stops at 20000 characters by
 default, and a cut always ends with `— TRUNCATED: showing N of M characters`
 — if what you need is missing, re-run with `--max-chars 0` before concluding
 the page lacks it. Shell tools often truncate long output, so write a whole
-page to a file and read it in parts. The JSON envelope (without `--pretty`)
+page to a file and read it in parts — a new file per page (as `mktemp`
+gives), never one fixed name, or parallel fetches overwrite each other and
+one page's text gets cited as another's. The JSON envelope (without `--pretty`)
 is there when a script needs the fields.
 
 Exit `0` is `ok`; `2` is anything else, with the status on the first line:
 
 | status | do |
 |---|---|
-| `blocked` | `HTTP 404` is a dead URL — search again; 401/403 may be the network — `sought doctor` |
+| `blocked` | `HTTP 404`/`410`: dead URL — search again. Other 4xx: the site refuses; find another copy. `HTTP 5xx`: usually temporary — retry once later or use a mirror. 401/403, or an error line instead of an HTTP code (DNS, proxy, TLS/certificate): likely the network — `sought doctor` |
 | `rate_limited` | 429, Cloudflare challenge or bot wall — do not retry in a loop; find the content elsewhere |
 | `timeout` | retry once, or raise `--timeout` |
 | `error` | the page needs JavaScript, is not text (PDF), or is too large — find another source (docs mirror, raw file, API) |
@@ -133,6 +135,8 @@ the final URL after redirects. More: [references/fetch.md](references/fetch.md).
 ```bash
 sought doctor            # full check with live probes; non-zero exit means a required check failed
 sought doctor --offline  # skip the network probes
+sought doctor --fix      # install a missing Chromium — the remedy when brave/startpage cannot start
+sought config --init     # write an annotated config file, if there is none yet
 ```
 
 One engine being down is a warning, not a failure — routing around it is the

@@ -109,6 +109,29 @@ def skill_files(skill_dir: Path) -> list[Path]:
     return sorted(files, key=lambda p: (p != Path("SKILL.md"), p.as_posix()))
 
 
+def _refuse_conflicts(skill_dir: Path, dest: Path, shipped: list[Path]) -> None:
+    """Raise SoughtError, before anything is written, for a destination the copy would trip over.
+
+    Each of these used to escape as a raw traceback (SameFileError,
+    FileExistsError), which `run()` rightly does not catch: a destination that
+    is the bundled skill itself — a developer's `~/.claude/skills/sought`
+    symlinked to the checkout — and a file where the install needs a
+    directory, or a directory where it needs a file.
+    """
+    if dest.exists() and dest.resolve() == skill_dir.resolve():
+        msg = f"{dest} is the bundled skill itself ({skill_dir.resolve()}) — nothing to install; it is already current"
+        raise SoughtError(msg)
+    for rel in shipped:
+        target = dest / rel
+        for parent in (dest, *(dest / p for p in reversed(rel.parents[:-1]))):
+            if parent.exists() and not parent.is_dir():
+                msg = f"{parent} is a file, but the skill needs a directory there; move it away and re-run"
+                raise SoughtError(msg)
+        if target.is_dir():
+            msg = f"{target} is a directory, but the skill needs a file there; move it away and re-run"
+            raise SoughtError(msg)
+
+
 def install_skill(*, dest_root: Path, force: bool = False, name: str = NAME) -> Installed:
     """Copy the bundled skill directory to `dest_root/<name>/`.
 
@@ -126,11 +149,17 @@ def install_skill(*, dest_root: Path, force: bool = False, name: str = NAME) -> 
         raise SoughtError(msg)
 
     shipped = skill_files(skill_dir)
+    _refuse_conflicts(skill_dir, dest, shipped)
     written = []
     for rel in shipped:
         target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(skill_dir / rel, target)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(skill_dir / rel, target)
+        except OSError as exc:
+            done = f"; {len(written)} of {len(shipped)} files were written — fix it and re-run with --force"
+            msg = f"cannot write {target}: {exc.strerror or exc}{done if written else ''}"
+            raise SoughtError(msg) from exc
         written.append(target)
 
     shipped_set = set(shipped)

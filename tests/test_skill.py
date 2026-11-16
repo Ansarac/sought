@@ -104,6 +104,61 @@ def test_force_reports_but_never_deletes_files_it_does_not_ship(tmp_path):
     assert installed.untouched == [leftover]
 
 
+def test_a_destination_that_is_the_bundled_skill_itself_is_refused_not_a_traceback(tmp_path):
+    # A developer's ~/.claude/skills/sought symlinked to the checkout: copying
+    # onto itself raised shutil.SameFileError.
+    root = tmp_path / "skills"
+    root.mkdir()
+    try:
+        (root / "sought").symlink_to(_bundled_dir(), target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create a directory symlink here")
+
+    with pytest.raises(SoughtError, match="is the bundled skill itself"):
+        skill_mod.install_skill(dest_root=root, force=True)
+
+
+def test_a_file_where_the_skill_directory_goes_is_refused(tmp_path):
+    (tmp_path / "sought").write_text("stray", encoding="utf-8")
+
+    with pytest.raises(SoughtError, match=r"sought is a file, but the skill needs a directory"):
+        skill_mod.install_skill(dest_root=tmp_path)
+
+    assert (tmp_path / "sought").read_text(encoding="utf-8") == "stray"
+
+
+def test_a_file_where_references_goes_is_refused_before_anything_is_written(tmp_path):
+    (tmp_path / "sought").mkdir()
+    (tmp_path / "sought" / "references").write_text("stray", encoding="utf-8")
+
+    with pytest.raises(SoughtError, match=r"references is a file"):
+        skill_mod.install_skill(dest_root=tmp_path)
+
+    assert not (tmp_path / "sought" / "SKILL.md").exists()
+
+
+def test_a_directory_where_a_skill_file_goes_is_refused(tmp_path):
+    (tmp_path / "sought" / "references" / "fetch.md").mkdir(parents=True)
+
+    with pytest.raises(SoughtError, match=r"fetch\.md is a directory"):
+        skill_mod.install_skill(dest_root=tmp_path)
+
+
+def test_a_write_failure_is_a_sought_error_naming_the_file(tmp_path, monkeypatch):
+    calls = []
+
+    def flaky_copy(src, dst):
+        calls.append(dst)
+        if len(calls) == 2:  # fail after SKILL.md is written
+            raise PermissionError(13, "Permission denied")
+        Path(dst).write_bytes(Path(src).read_bytes())
+
+    monkeypatch.setattr(skill_mod.shutil, "copyfile", flaky_copy)
+
+    with pytest.raises(SoughtError, match=r"cannot write .*: Permission denied; 1 of \d+ files were written"):
+        skill_mod.install_skill(dest_root=tmp_path)
+
+
 def test_a_skills_root_under_a_dot_directory_is_not_mistaken_for_a_dotfile(tmp_path):
     # ~/.pi/agent/skills and ~/.claude/skills: only parts below the skill
     # directory may disqualify a file.
@@ -218,3 +273,15 @@ def test_the_skill_works_without_a_harness_fetch_tool():
     body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "sought fetch" in body
     assert "--max-chars 0" in body
+
+
+def test_the_skill_names_the_remedies_doctor_points_to():
+    text = (_bundled_dir() / "SKILL.md").read_text(encoding="utf-8")
+    assert "sought doctor --fix" in text
+    assert "sought config --init" in text
+
+
+def test_the_whole_page_recipe_never_reuses_one_file_name():
+    text = (_bundled_dir() / "SKILL.md").read_text(encoding="utf-8")
+    assert "page.md" not in text
+    assert "mktemp" in text

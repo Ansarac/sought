@@ -45,7 +45,7 @@ Always the same keys:
 | status | meaning | what to do |
 |---|---|---|
 | `ok` | content extracted | — |
-| `blocked` | connection failed or HTTP 4xx/5xx (`detail: "HTTP 404"`) | a 404 is a dead URL; search again. 401/403 may be the network — `sought doctor` |
+| `blocked` | connection failed or HTTP 4xx/5xx (`detail: "HTTP 404"`) | 404/410: dead URL, search again. Other 4xx: the site refuses, find another copy. 5xx: usually temporary, retry once later or use a mirror. 401/403, or a connection error (DNS, proxy, TLS) instead of an HTTP code: likely the network — `sought doctor` |
 | `rate_limited` | HTTP 429, a Cloudflare challenge, or a bot-wall page | do not retry in a loop; find the content elsewhere |
 | `timeout` | no response within `--timeout` | retry once, or raise `--timeout` |
 | `error` | `no readable content — page needs JavaScript`, an unsupported type (`application/pdf`), or a body over 10 MB | the page cannot be read this way; look for another source (docs mirror, raw file, API) |
