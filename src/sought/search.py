@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sought import state
 from sought.browser import browser_session
-from sought.engines import brave, google, marginalia, startpage, verticals
+from sought.engines import brave, brave_api, google, marginalia, startpage, verticals
 from sought.engines.base import (
     BROWSER_ENGINES,
     GENERAL_ENGINES,
@@ -35,6 +35,10 @@ _GENERAL = {
     "marginalia": marginalia.search,
     # Opt-in, and never in the default order; gated by `_not_asked`.
     "google": google.search,
+    # Opt-in by API key, never in the default order. Plain HTTP, so it is in
+    # neither browser set and asking for it launches no Chromium. Without a key
+    # it records its own `error` attempt rather than being skipped.
+    "brave_api": brave_api.search,
 }
 
 # One spelling, used by both the chain and the single-source path. The engine

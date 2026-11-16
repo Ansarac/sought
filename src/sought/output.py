@@ -47,6 +47,78 @@ def envelope(  # noqa: PLR0913 — keyword-only, one per envelope field
     }
 
 
+def fetch_envelope(  # noqa: PLR0913 — keyword-only, one per envelope field
+    *,
+    url: str,
+    status: str,
+    detail: str = "",
+    final_url: str | None = None,
+    http_status: int | None = None,
+    content_type: str | None = None,
+    method: str | None = None,
+    title: str | None = None,
+    content: str | None = None,
+    total_chars: int | None = None,
+    truncated: bool = False,
+    max_chars: int = 0,
+) -> dict[str, Any]:
+    """Build the envelope returned by `sought fetch`.
+
+    Every key is always present, as with `cached` in the search envelope, so
+    a reader never has to tell "absent" from "not applicable". A failed fetch
+    has `content: null` and a status other than `ok`, with `detail` saying
+    why; `empty` never appears — a page that yields nothing is `error`.
+    `chars` counts what is in `content`, `total_chars` what the page had.
+    """
+    return {
+        "url": url,
+        "final_url": final_url,
+        "status": status,
+        "detail": detail,
+        "http_status": http_status,
+        "content_type": content_type,
+        "method": method,
+        "title": title,
+        "content": content,
+        "chars": len(content) if content is not None else 0,
+        "total_chars": total_chars if total_chars is not None else 0,
+        "truncated": truncated,
+        "max_chars": max_chars,
+    }
+
+
+def print_fetch_pretty(payload: dict[str, Any]) -> None:
+    """Write a human-readable rendering of a fetch envelope on stdout."""
+    status = payload["status"]
+    where = payload.get("final_url") or payload["url"]
+    if status != "ok":
+        detail = payload.get("detail") or _STATUS_HINT.get(status, "")
+        code = payload.get("http_status")
+        code_note = f" (HTTP {code})" if code and f"HTTP {code}" not in detail else ""
+        print(f"  ✗ {where}: {status}{code_note} — {detail}")
+        return
+
+    facts = [f"HTTP {payload['http_status']}", payload.get("content_type") or "no Content-Type", payload["method"]]
+    print(f"  ✓ {where} — {', '.join(str(f) for f in facts)}")
+    if payload.get("detail"):
+        print(f"    {payload['detail']}")
+    if payload.get("final_url") and payload["final_url"] != payload["url"]:
+        print(f"    redirected from {payload['url']}")
+    print()
+    if payload.get("title"):
+        print(f"# {payload['title']}")
+        print()
+    print(payload["content"])
+    print()
+    if payload["truncated"]:
+        print(
+            f"— TRUNCATED: showing {payload['chars']:,} of {payload['total_chars']:,} characters "
+            f"(--max-chars {payload['max_chars']}; --max-chars 0 for all)"
+        )
+    else:
+        print(f"— {payload['chars']:,} characters")
+
+
 def print_json(payload: dict[str, Any]) -> None:
     """Write the envelope as one JSON document on stdout."""
     json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)

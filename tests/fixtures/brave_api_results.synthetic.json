@@ -1,0 +1,68 @@
+{
+  "type": "search",
+  "query": {
+    "original": "rust async runtime",
+    "show_strict_warning": false,
+    "is_navigational": false,
+    "is_news_breaking": false,
+    "spellcheck_off": true,
+    "country": "us",
+    "bad_results": false,
+    "should_fallback": false,
+    "more_results_available": true
+  },
+  "mixed": {
+    "type": "mixed",
+    "main": [
+      {"type": "web", "index": 0, "all": false},
+      {"type": "web", "index": 1, "all": false},
+      {"type": "web", "index": 2, "all": false}
+    ],
+    "top": [],
+    "side": []
+  },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "title": "Tokio - An asynchronous <strong>Rust</strong> <strong>runtime</strong>",
+        "url": "https://tokio.rs/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Tokio is an <strong>asynchronous</strong> <strong>runtime</strong> for the <strong>Rust</strong> programming language.",
+        "page_age": "2026-09-01T00:00:00",
+        "profile": {"name": "Tokio", "url": "https://tokio.rs/", "long_name": "tokio.rs", "img": ""},
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "meta_url": {"scheme": "https", "netloc": "tokio.rs", "hostname": "tokio.rs", "favicon": "", "path": ""},
+        "age": "September 1, 2026"
+      },
+      {
+        "title": "Asynchronous Programming in <strong>Rust</strong> &amp; friends",
+        "url": "https://rust-lang.github.io/async-book/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "The async book explains <strong>async</strong>/await and how executors &amp; runtimes fit together.",
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "meta_url": {"scheme": "https", "netloc": "rust-lang.github.io", "hostname": "rust-lang.github.io", "favicon": "", "path": "› async-book"}
+      },
+      {
+        "title": "async-std",
+        "url": "https://async.rs/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "meta_url": {"scheme": "https", "netloc": "async.rs", "hostname": "async.rs", "favicon": "", "path": ""}
+      }
+    ],
+    "family_friendly": true
+  }
+}

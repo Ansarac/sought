@@ -1,17 +1,19 @@
 ---
 name: sought
-description: Search the web with an explicit audit trail, and as a fallback when the built-in WebSearch tool is unavailable or blocked. Use for finding documentation, comparing libraries, researching error messages, checking community discussion, or looking up packages, repos and news. Also use whenever a search must not silently return wrong results.
+description: Search the web with an explicit audit trail, and as a fallback when the built-in WebSearch tool is unavailable or blocked. Use for finding documentation, comparing libraries, researching error messages, checking community discussion, or looking up packages, repos and news. Also use whenever a search must not silently return wrong results, and `sought fetch <url>` to read a known page as markdown when WebFetch is unavailable or blocked.
 ---
 
 # sought
 
 `sought` is a search CLI that degrades across independent engines and reports
 exactly what it tried. Use it whenever you need to *discover* URLs. Once you
-have a URL, fetch it normally.
+have a URL, fetch it normally — with WebFetch, or with `sought fetch <url>`
+when WebFetch is unavailable or you need to know exactly why a page could not
+be read.
 
 ## The one rule
 
-**Never use WebFetch on a search engine results page.**
+**Never use WebFetch — or `sought fetch` — on a search engine results page.**
 
 Search engines do not simply block scrapers. Some serve HTTP 200 with a page
 of plausible, well-formatted, completely unrelated results. There is no error
@@ -125,6 +127,48 @@ for 15 minutes by default. Add `--fresh` if you need a live answer.
 
 `1` and `2` mean opposite things. `1` is an answer; `2` is a broken pipe.
 
+## Reading a page: `sought fetch`
+
+```bash
+sought fetch https://docs.python.org/3/library/textwrap.html            # JSON
+sought fetch https://example.com/page --pretty --max-chars 5000
+```
+
+One plain HTTP request (OS trust store, sought's proxy rules, an honest
+`sought/<version>` User-Agent), readable content back as markdown. No browser:
+a JavaScript-only page is reported, not rendered. The envelope always has the
+same keys:
+
+```json
+{"url": "...", "final_url": "...", "status": "ok", "detail": "",
+ "http_status": 200, "content_type": "text/html", "method": "readability",
+ "title": "...", "content": "# ...markdown...",
+ "chars": 13709, "total_chars": 13709, "truncated": false, "max_chars": 20000}
+```
+
+- **`truncated: true`** — `content` stops at `max_chars` (default 20000) of
+  `total_chars`. Re-run with `--max-chars 0` (or a larger N) if the part you
+  need is missing; do not conclude the page lacks it.
+- **`method`** — `readability`; `fallback:<selector>` (`main`, `article`,
+  `[role=main]`, `#content`, `body`) when readability found too little, with
+  `detail` saying so; `verbatim` for `text/*` and JSON, passed through as is.
+- **`detail` on `ok`** — e.g. `extracted 243 of the page's 3,059 words; the
+  rest was judged navigation`: the extract may be partial. Usually right
+  (a README inside a sidebar-heavy page), but check if something is missing.
+- **`final_url`** — where redirects ended; cite that one.
+
+| status | meaning | what to do |
+|---|---|---|
+| `ok` | content extracted | — |
+| `blocked` | connection failed or HTTP 4xx/5xx (`detail: "HTTP 404"`) | a 404 is a dead URL; search again. 401/403 may be the network — `sought doctor` |
+| `rate_limited` | HTTP 429, a Cloudflare challenge, or a bot-wall page | do not retry in a loop; find the content elsewhere |
+| `timeout` | no response within `--timeout` | retry once, or raise `--timeout` |
+| `error` | `no readable content — page needs JavaScript`, an unsupported type (`application/pdf`), or a body over 10 MB | the page cannot be read this way; look for another source (docs mirror, raw file, API) |
+
+Never `empty`: a page that yields no text is `error` with the reason, not `ok`
+with an empty `content`. Exit `0` on `ok`, `2` otherwise; the envelope is on
+stdout either way, the one-line reason on stderr.
+
 ## Choosing a source
 
 Without `--source`, sought runs the general chain: **brave → startpage →
@@ -186,12 +230,31 @@ When google results do appear, read them like this:
 - `rate_limited` with `google /sorry wall` is Google refusing; a cooldown
   follows.
 
+### `brave_api` (opt-in, needs the user's key)
+
+The official Brave Search API, if the user has set a key (`[brave_api]
+api_key` in the config, or `BRAVE_API_KEY`). It is not in the default chain;
+reach it with `--source brave_api` only when the user has said a key is set —
+without one you get one `error` attempt naming both places, and exit code 2.
+Never set or ask for the key yourself, and never put one on a command line.
+
+- Same Brave index as `brave`, but no browser and no bot wall: a quick, exact
+  answer.
+- `rate_limited` here is the user's plan quota, not a bot wall; the detail
+  carries the quota headers (`remaining 0, 0` — per second, per month). Use
+  another engine; retrying will not help.
+- `error` with `API key rejected` means the key is wrong or revoked — tell the
+  user, do not retry.
+- At most 20 results per query. With a higher `--limit`, the `ok` attempt says
+  `capped at 20 results by the API`.
+
 ## Suggested workflow
 
 1. Vertical source if the question has one, otherwise the general chain.
 2. Check `low_relevance` and `attempts`.
 3. Pick promising URLs from the results.
-4. WebFetch those URLs for the actual content.
+4. WebFetch those URLs for the actual content — or `sought fetch` them when
+   WebFetch is unavailable.
 
 Searching is discovery; fetching is reading. Keep them separate.
 

@@ -45,7 +45,7 @@ class Check:
 
 def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
     """Print the diagnostic report and return the process exit code."""
-    checks: list[Check] = [_python(), _playwright_package()]
+    checks: list[Check] = [_python(), _playwright_package(), _fetch_extraction()]
 
     chromium = _chromium(fix=fix)
     checks.append(chromium)
@@ -70,6 +70,9 @@ def run(cfg: Config, *, offline: bool = False, fix: bool = False) -> int:
     google = _google_line(cfg, offline=offline, chromium_ok=chromium.ok, cooling=cooling)
     if google is not None:
         probes.append(google)
+    brave_api = _brave_api_line(cfg, offline=offline, cooling=cooling)
+    if brave_api is not None:
+        probes.append(brave_api)
 
     tls = _tls_note(cfg, probes=probes)
     if tls is not None:
@@ -108,6 +111,31 @@ def _playwright_package() -> Check:
     except ImportError:
         return Check("playwright package", ok=False, detail="not installed (pip install playwright)")
     return Check("playwright package", ok=True, detail=str(version))
+
+
+_FETCH_SAMPLE = (
+    "<html><head><title>t</title></head><body><article><h1>Heading</h1>"
+    "<p>One short paragraph of ordinary words, enough to be read as content by the extractor.</p>"
+    "</article></body></html>"
+)
+
+
+def _fetch_extraction() -> Check:
+    """Run `sought fetch`'s extractor on a built-in page: proves lxml, readability and markdownify load.
+
+    Optional: search does not use them, so a broken install of these costs
+    `fetch` alone and should not fail the doctor.
+    """
+    name = "fetch extraction"
+    try:
+        from sought.fetch import extract
+
+        page = extract(_FETCH_SAMPLE, "https://example.invalid/")
+    except ImportError as exc:
+        return Check(name, ok=False, detail=f"unavailable: {exc} (reinstall sought)", required=False)
+    ok = page.content.startswith("# Heading")
+    detail = f"readability + markdownify ({page.method})" if ok else f"unexpected output: {page.content[:60]!r}"
+    return Check(name, ok=ok, detail=detail, required=False)
 
 
 def _chromium(*, fix: bool) -> Check:
@@ -312,7 +340,7 @@ def _ca_import_hint() -> str:
 
 # Statuses that point at the route rather than at the engine's own answer.
 _ROUTE_FAILURES = frozenset({"blocked", "timeout", "error"})
-_HTTP_ENGINES = frozenset({"marginalia"})
+_HTTP_ENGINES = frozenset({"marginalia", "brave_api"})
 
 
 def _route_note(cfg: Config, *, probes: list[Check]) -> Check | None:
@@ -486,7 +514,13 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
             probed += 1
             checks.append(Check("engine google", ok=False, detail=_google_disabled(in_order=True), required=False))
             continue
+        if name == "brave_api" and not cfg.brave_api.resolve()[0]:
+            probed += 1
+            checks.append(Check("engine brave_api", ok=False, detail=_brave_api_no_key(in_order=True), required=False))
+            continue
         check, outcome = _probe(cfg, name, chromium_ok=chromium_ok, cooled=cooled)
+        if name == "brave_api":
+            check.detail += f" [{_brave_api_key_source(cfg)}]"
         checks.append(check)
         if outcome == "probed":
             probed += 1
@@ -580,6 +614,47 @@ def _google_line(cfg: Config, *, offline: bool, chromium_ok: bool, cooling: list
         return None  # probed with the chain
     check, _outcome = _probe(cfg, "google", chromium_ok=chromium_ok, cooled={c.engine for c in cooling})
     check.detail += " [not in engines.order: reached only by --source google]"
+    return check
+
+
+BRAVE_API_NO_KEY = "no API key (opt-in: [brave_api] api_key, or BRAVE_API_KEY)"
+
+
+def _brave_api_no_key(*, in_order: bool) -> str:
+    if not in_order:
+        return BRAVE_API_NO_KEY
+    return f"{BRAVE_API_NO_KEY} — but engines.order lists it, so every search reaching it records an error"
+
+
+def _brave_api_key_source(cfg: Config) -> str:
+    """Say where the key came from — never the key, nor any part of it."""
+    _key, source = cfg.brave_api.resolve()
+    return {"config": "key from config file", "env": "key from BRAVE_API_KEY"}.get(source, "no key")
+
+
+def _brave_api_line(cfg: Config, *, offline: bool, cooling: list[Cooldown]) -> Check | None:
+    """Report the opt-in brave_api engine wherever the probes have not already.
+
+    Shaped like `_google_line`. No key reads as a plain ✓ — it is the
+    default — unless the order names brave_api, which makes it a warning.
+    With a key, it says where the key came from (config file or environment,
+    which matters when the two disagree), and online it is probed even
+    outside the order, since `--source brave_api` reaches it. A probe is one
+    real query against the user's quota, which is why `--offline` never makes
+    one.
+    """
+    in_order = "brave_api" in cfg.order
+    if not cfg.brave_api.resolve()[0]:
+        if in_order and not offline:
+            return None  # `_engine_probes` reported it
+        return Check("engine brave_api", ok=not in_order, detail=_brave_api_no_key(in_order=in_order), required=False)
+    source = _brave_api_key_source(cfg)
+    if offline:
+        return Check("engine brave_api", ok=True, detail=f"{source}, not probed (--offline)", required=False)
+    if in_order:
+        return None  # probed with the chain
+    check, _outcome = _probe(cfg, "brave_api", chromium_ok=True, cooled={c.engine for c in cooling})
+    check.detail += f" [{source}; not in engines.order: reached only by --source brave_api]"
     return check
 
 

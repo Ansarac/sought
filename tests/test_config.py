@@ -72,6 +72,10 @@ def test_partial_file_keeps_defaults_for_the_rest(tmp_path):
         "[google]\nmax_per_hour = -1\n",
         "[google]\nmax_per_hour = true\n",
         "[cache]\nttl_seconds = 'long'\n",
+        "[fetch]\nmax_chars = -1\n",
+        "[fetch]\nmax_chars = true\n",
+        "[fetch]\nmax_chars = '20000'\n",
+        "fetch = 1\n",
         "cache = 5\n",
         "[engines]\norder = [1, 2]\n",
         "[tls]\nsystem_trust = 'yes'\n",
@@ -121,6 +125,7 @@ def test_the_written_default_parses_back_to_the_builtin_defaults(tmp_path):
     assert loaded.cache_ttl_seconds == builtin.cache_ttl_seconds
     assert loaded.challenge_wait_seconds == builtin.challenge_wait_seconds
     assert loaded.google == builtin.google
+    assert loaded.fetch == builtin.fetch
 
 
 def test_google_is_off_by_default_and_not_in_the_default_order():
@@ -177,3 +182,10 @@ def test_proxy_mapping_is_none_when_nothing_is_set():
     """None means "inherit from the environment", which is not the same as {}."""
     assert Config().proxy.as_requests_mapping() is None
     assert Config().proxy.browser_server() is None
+
+
+def test_the_fetch_table_is_read_and_zero_means_unlimited(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[fetch]\nmax_chars = 0\n", encoding="utf-8")
+    assert load(path).fetch.max_chars == 0
+    assert Config().fetch.max_chars == config_mod.DEFAULT_FETCH_MAX_CHARS

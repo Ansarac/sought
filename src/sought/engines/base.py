@@ -14,13 +14,15 @@ if TYPE_CHECKING:
 
 Status = Literal["ok", "rate_limited", "blocked", "empty", "timeout", "error"]
 
-GENERAL_ENGINES = ("brave", "startpage", "marginalia", "google")
+GENERAL_ENGINES = ("brave", "startpage", "marginalia", "google", "brave_api")
 VERTICAL_SOURCES = ("wikipedia", "github", "hn", "stackoverflow", "npm", "pypi", "news")
 
-# General engines that stay off unless the config file switches them on;
-# naming one in `engines.order` or `--source` is not enough on its own. Not in
-# the default order either. See `sought.engines.google` for why google is one.
-OPT_IN_ENGINES = frozenset({"google"})
+# General engines that stay off unless the config switches them on; naming one
+# in `engines.order` or `--source` is not enough on its own. Not in the default
+# order either. google is switched on by `[google] enabled` (see
+# `sought.engines.google` for why it is opt-in), brave_api by an API key (see
+# `sought.engines.brave_api`).
+OPT_IN_ENGINES = frozenset({"google", "brave_api"})
 
 # Engines that borrow the chain's shared Chromium. Plain HTTP against these
 # gets a 429 or a bot-check page — verified, not assumed.

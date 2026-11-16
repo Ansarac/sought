@@ -61,7 +61,9 @@ _CACHE_FORMAT = 2
 # Only the general engines are scraped, so only they can be hammered. A
 # vertical source that rate limits is a documented API saying "slow down" for
 # this one request, and the next request is cheap to make. `google` is a
-# general engine and is cooled like the rest.
+# general engine and is cooled like the rest. So is `brave_api`, though it is
+# an API and not scraped: its 429 is the user's plan quota, and asking again
+# seconds later only spends requests the plan has already refused.
 _COOLED = frozenset(GENERAL_ENGINES)
 
 

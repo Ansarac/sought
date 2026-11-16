@@ -65,6 +65,7 @@ sought "rust async runtimes" --pretty           # table
 sought "MCP web search" --source hn             # one vertical source
 sought "playwright" --source npm --limit 5
 sought "playwright bypass cloudflare" --fresh   # skip the result cache for this search
+sought fetch https://docs.python.org/3/library/textwrap.html   # read one page as markdown
 ```
 
 Output is JSON by default because the envelope carries the audit trail:
@@ -107,7 +108,7 @@ opposite responses: reword the query, versus wait or use another engine.
 Both reduce the load sought itself puts on the engines. Neither removes
 anything from the audit trail.
 
-**Cooldowns.** When `brave`, `startpage`, `marginalia` or (if enabled)
+**Cooldowns.** When `brave`, `startpage`, `marginalia` or (if enabled) `brave_api` /
 `google` answers `rate_limited`, sought leaves that engine alone for
 `engines.cooldown_seconds`
 (default 600). Asking again seconds after a refusal does not get an answer —
@@ -191,6 +192,57 @@ titles are short.
 `130` interrupted.
 
 `1` and `2` differ on purpose: one is an answer, the other is a malfunction.
+
+### Reading one page: `sought fetch`
+
+Search finds URLs; `sought fetch <url>` reads one, with the same rule: content,
+or a classified reason there is none.
+
+```bash
+sought fetch https://docs.python.org/3/library/textwrap.html            # JSON
+sought fetch https://jvns.ca/blog/2024/02/16/popular-git-config-options/ --pretty
+sought fetch https://example.com/long-page --max-chars 0                # no truncation
+```
+
+```json
+{
+  "url": "https://docs.python.org/3/library/textwrap.html",
+  "final_url": "https://docs.python.org/3/library/textwrap.html",
+  "status": "ok",
+  "detail": "",
+  "http_status": 200,
+  "content_type": "text/html",
+  "method": "readability",
+  "title": "textwrap — Text wrapping and filling — Python 3.15.2 documentation",
+  "content": "# `textwrap` — Text wrapping and filling\n\n...",
+  "chars": 13709,
+  "total_chars": 13709,
+  "truncated": false,
+  "max_chars": 20000
+}
+```
+
+HTML goes through readability (falling back to `main`, `article`,
+`[role=main]`, `#content`, then `body`, named in `method`) and comes out as
+markdown; `text/*` and JSON come back verbatim (`method: "verbatim"`).
+Content past `--max-chars` (default `[fetch] max_chars = 20000`, 0 = no limit)
+is cut, and `truncated` / `total_chars` say so — `--pretty` prints it too.
+
+It is one plain HTTP request through the same session as the keyless sources
+(OS trust store, sought's proxy rules), sending `sought/<version>` as its
+User-Agent rather than posing as a browser. There is no browser path: a page
+that only renders under JavaScript is reported, not rendered.
+
+| status | when |
+|---|---|
+| `ok` | content extracted; `detail` may note a fallback, or that the extract is a small share of the page |
+| `blocked` | connection failed, or HTTP 4xx/5xx (`"detail": "HTTP 404"`) |
+| `rate_limited` | HTTP 429, a Cloudflare challenge, or a bot-wall page |
+| `timeout` | no response within `--timeout` |
+| `error` | no readable content (`page needs JavaScript`), unsupported type (PDF, images), or a body over 10 MB |
+
+Never `empty`: a page that yields nothing is `error` with the reason. Exit `0`
+on `ok`, `2` otherwise — the envelope is printed either way.
 
 ## Sources
 
@@ -296,12 +348,47 @@ What changes when it is on, and what does not:
   true)`, or, when enabled, a live probe — which spends one slot of the
   budget, and says so — followed by what is left.
 
+## Brave Search API (opt-in)
+
+`brave_api` queries the [official Brave Search API](https://api-dashboard.search.brave.com)
+with your own subscription key. It needs no browser and meets no bot wall, so
+an HTTP 429 from it means your plan's quota is spent — the detail carries
+Brave's `X-RateLimit-*` headers. It is not the same as an HTTP-only `brave`:
+scraping Brave's results page without a browser is refused, and sought does
+not do it.
+
+A key is what turns it on (the free plan asks for a card at sign-up):
+
+```toml
+[brave_api]
+api_key = ""          # empty: use the BRAVE_API_KEY environment variable
+
+[engines]
+order = ["brave_api", "brave", "startpage", "marginalia"]   # optional
+```
+
+```bash
+BRAVE_API_KEY=... sought "rust tokio select macro" --source brave_api
+```
+
+- Asked for without a key, it records an `error` attempt naming
+  `brave_api.api_key` and `BRAVE_API_KEY`; it is never skipped silently.
+- A rejected key is `error` (`API key rejected — HTTP 422
+  (SUBSCRIPTION_TOKEN_INVALID)`), never `blocked` or `rate_limited`. A 401
+  that is not Brave's own JSON error — an authenticating firewall, say — is
+  `blocked`, since the key may be fine.
+- The API returns at most 20 results; with a higher limit the `ok` attempt
+  says `capped at 20 results by the API (limit N)`.
+- The key is sent in one request header and appears nowhere else: not in
+  output, attempts, the cache or doctor, which reports only whether a key is
+  set and whether it came from the config file or the environment.
+
 ## Terms of use
 
 `sought` drives the Brave and Startpage result pages through a real browser,
 and, if you enable it, Google's. All three services' terms restrict automated
 querying of their result pages; Brave offers an official Search API for
-programmatic access, which is the supported route for anything beyond
+programmatic access (the opt-in `brave_api` engine), which is the supported route for anything beyond
 occasional interactive use. Marginalia is an
 independent search engine and publishes an API of its own. The vertical sources
 are documented public APIs. You are responsible for your own compliance with
@@ -361,6 +448,9 @@ ttl_seconds = 900        # replay identical successful searches this long; 0 dis
 [tls]
 system_trust = true
 browser_ignore_cert_errors = false
+
+[fetch]
+max_chars = 20000        # `sought fetch` content limit, always disclosed; 0 = no limit
 
 [google]                 # opt-in; see "Google (opt-in)" above before changing
 enabled = false

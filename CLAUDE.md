@@ -43,6 +43,17 @@ reasons behind code that otherwise looks paranoid. None of them are hypotheses.
 An engine list that claims coverage without a browser is claiming coverage it
 does not have.
 
+The opt-in `brave_api` engine (`engines/brave_api.py`) is not that path. It
+calls Brave's official, keyed JSON API, not the results page: there is no bot
+wall, and a 429 there is a real quota (`rate_limited`, with the
+`X-RateLimit-*` headers in the detail). A key (`[brave_api] api_key`, else
+`BRAVE_API_KEY`) is what enables it; never in `DEFAULT_ORDER`, and asked for
+without a key it records an `error` naming both. The key must never reach
+output, attempts, state or doctor — `_scrub` and the key-leak test enforce
+that. Measured: an invalid key gets HTTP 422 `SUBSCRIPTION_TOKEN_INVALID`,
+not 401, so a rejected key is recognised by Brave's error code; a 401/403 that
+is not Brave's JSON is a firewall and stays `blocked`.
+
 **Do not add Bing.** It answers blocked requests with HTTP 200 and a page of
 unrelated results rather than an error. This is what `low_relevance` exists to
 catch, and it is not worth inviting in.
@@ -166,6 +177,7 @@ wants a human, a CAPTCHA above all, stays a wall.
 src/sought/
   cli.py         argument parsing, subcommand dispatch, exit codes
   search.py      the fallback chain — where the audit invariant lives
+  fetch.py       `sought fetch <url>`: one plain-HTTP page → markdown (readability-lxml + markdownify), classified
   browser.py     Playwright lifecycle; one Chromium for the chain, a separate one for google
   config.py      ~/.config/sought/config.toml
   doctor.py      self-check; required failure ⇒ non-zero exit
@@ -178,6 +190,7 @@ src/sought/
     base.py      Engine protocol, Result, ResultList, Attempt, EngineFailure, relevance
     brave.py  startpage.py     browser engines, sharing the chain's Chromium
     google.py                  opt-in, off by default: own Chromium, flag hidden, budgeted
+    brave_api.py               opt-in by API key: official Brave Search API, plain HTTP
     marginalia.py              plain HTTP
     verticals.py               seven keyless APIs
 skills/sought/SKILL.md         force-included into the wheel
@@ -199,7 +212,7 @@ rest is ordinary:
 ## Testing
 
 Engine parsers are split from their network calls (`marginalia.parse`,
-`google.parse`, the `_EXTRACT` scripts) so they can be tested against saved
+`google.parse`, the `_EXTRACT` scripts, `fetch.extract`) so they can be tested against saved
 fixtures offline. `google.parse` reads the browser's own serialization of the
 page, so its fixtures (`tests/fixtures/google_results*.html`, sanitised live
 captures) are exactly what runs. Add a fixture rather than a live call when

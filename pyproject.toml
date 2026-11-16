@@ -31,7 +31,9 @@ classifiers = [
 ]
 dependencies = [
     "defusedxml>=0.7",
+    "markdownify>=1.2",
     "playwright>=1.49",
+    "readability-lxml>=0.8.4",
     "requests>=2.32",
     "truststore>=0.10",
 ]
