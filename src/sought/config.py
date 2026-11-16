@@ -24,6 +24,7 @@ DEFAULT_COOLDOWN = 600
 DEFAULT_CACHE_TTL = 900
 DEFAULT_CHALLENGE_WAIT = 60
 DEFAULT_GOOGLE_BUDGET = 100
+DEFAULT_FETCH_MAX_CHARS = 20000
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # sought configuration — https://github.com/Ansarac/sought
@@ -90,6 +91,13 @@ system_trust = true
 # verifies against the OS trust store and is unaffected.
 browser_ignore_cert_errors = false
 
+[fetch]
+# `sought fetch <url>` returns at most this many characters of page content
+# (markdown). A longer page is cut, and the output always says so
+# (`"truncated": true`, with the full length in `total_chars`). 0 = no limit.
+# `--max-chars` overrides it per call. Uses engines.timeout_seconds.
+max_chars = 20000
+
 [google]
 # OFF UNLESS YOU MEAN IT. Read all of this before switching it on.
 #
@@ -117,7 +125,54 @@ browser_ignore_cert_errors = false
 # /goto, not counted against the budget).
 enabled = false
 max_per_hour = 100
+
+[brave_api]
+# The official Brave Search API, as an opt-in `brave_api` engine. Unlike the
+# `brave` engine it does not scrape a results page: it sends your key to a
+# documented JSON endpoint, needs no browser, and its HTTP 429 means your
+# plan's quota is spent — not a bot wall.
+#
+# Get a key at https://api-dashboard.search.brave.com (the free plan asks for
+# a card). Leave api_key empty to use the BRAVE_API_KEY environment variable
+# instead; a key here wins over the environment. Keep this file private if
+# you put the key in it. sought never prints the key, and `sought doctor` says
+# only whether one is set and where it came from.
+#
+# A key alone does not put it in the chain: add "brave_api" to [engines]
+# order, or ask for it with `--source brave_api`. Asked for without a key, it
+# records an `error` attempt naming both places a key can go. The API returns
+# at most 20 results per query; a larger limit is capped, and the attempt says
+# so.
+api_key = ""
 """
+
+BRAVE_API_KEY_ENV = "BRAVE_API_KEY"
+
+
+@dataclass(frozen=True)
+class BraveApiConfig:
+    """The opt-in brave_api engine. See the [brave_api] comment in DEFAULT_CONFIG_TEMPLATE.
+
+    `api_key` is the config file's value only; `resolve` adds the environment.
+    Kept out of `repr` so that no traceback or debug print of a Config can
+    carry the key into a bug report.
+    """
+
+    api_key: str = field(default="", repr=False)
+
+    def resolve(self) -> tuple[str, str]:
+        """Return the key to use and where it came from: "config", "env", or "" for none.
+
+        Read from the environment at call time, not at load, so the config
+        file's precedence over the environment holds without `load` having to
+        know about it, and tests can set the variable per case.
+        """
+        if self.api_key.strip():
+            return self.api_key.strip(), "config"
+        env = os.environ.get(BRAVE_API_KEY_ENV, "").strip()
+        if env:
+            return env, "env"
+        return "", ""
 
 
 @dataclass(frozen=True)
@@ -126,6 +181,13 @@ class GoogleConfig:
 
     enabled: bool = False
     max_per_hour: int = DEFAULT_GOOGLE_BUDGET
+
+
+@dataclass(frozen=True)
+class FetchConfig:
+    """`sought fetch`. See the [fetch] comment in DEFAULT_CONFIG_TEMPLATE."""
+
+    max_chars: int = DEFAULT_FETCH_MAX_CHARS
 
 
 @dataclass(frozen=True)
@@ -189,6 +251,8 @@ class Config:
     system_trust: bool = True
     browser_ignore_cert_errors: bool = False
     google: GoogleConfig = field(default_factory=GoogleConfig)
+    brave_api: BraveApiConfig = field(default_factory=BraveApiConfig)
+    fetch: FetchConfig = field(default_factory=FetchConfig)
     source_path: Path | None = None
 
 
@@ -227,6 +291,8 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
     tls_raw = _table(raw, "tls", path)
     cache_raw = _table(raw, "cache", path)
     google_raw = _table(raw, "google", path)
+    brave_api_raw = _table(raw, "brave_api", path)
+    fetch_raw = _table(raw, "fetch", path)
 
     order = tuple(_str_list(engines_raw.get("order", DEFAULT_ORDER), "engines.order", path))
     if not order:
@@ -246,12 +312,12 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
             path,
         ),
         limit=positive_int(engines_raw.get("limit", DEFAULT_LIMIT), "engines.limit", path),
-        cooldown_seconds=_non_negative_int(
+        cooldown_seconds=non_negative_int(
             engines_raw.get("cooldown_seconds", DEFAULT_COOLDOWN),
             "engines.cooldown_seconds",
             path,
         ),
-        cache_ttl_seconds=_non_negative_int(
+        cache_ttl_seconds=non_negative_int(
             cache_raw.get("ttl_seconds", DEFAULT_CACHE_TTL),
             "cache.ttl_seconds",
             path,
@@ -276,6 +342,14 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
             max_per_hour=positive_int(
                 google_raw.get("max_per_hour", DEFAULT_GOOGLE_BUDGET),
                 "google.max_per_hour",
+                path,
+            ),
+        ),
+        brave_api=BraveApiConfig(api_key=_str(brave_api_raw.get("api_key", ""), "brave_api.api_key", path)),
+        fetch=FetchConfig(
+            max_chars=non_negative_int(
+                fetch_raw.get("max_chars", DEFAULT_FETCH_MAX_CHARS),
+                "fetch.max_chars",
                 path,
             ),
         ),
@@ -314,15 +388,17 @@ def positive_int(value: object, key: str, path: Path | None = None) -> int:
     return value
 
 
-def _non_negative_int(value: object, key: str, path: Path | None) -> int:
-    """Validate a duration where 0 is meaningful: it switches the feature off.
+def non_negative_int(value: object, key: str, path: Path | None = None) -> int:
+    """Validate a number where 0 is meaningful: it switches the feature or the limit off.
 
     Kept apart from `positive_int` on purpose. Zero is a valid cooldown or
     cache lifetime and an invalid limit or timeout, and loosening the shared
-    validator would let `--limit 0` back in.
+    validator would let `--limit 0` back in. Public for `--max-chars`, where
+    0 means "no limit".
     """
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        msg = f"{path}: {key} must be a non-negative integer (0 disables)"
+        where = f"{path}: " if path is not None else ""
+        msg = f"{where}{key} must be a non-negative integer (0 disables)"
         raise ConfigError(msg)
     return value
 

@@ -1,0 +1,11 @@
+{
+  "type": "ErrorResponse",
+  "error": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "status": 429,
+    "code": "RATE_LIMITED",
+    "detail": "Request rate limit exceeded for plan.",
+    "meta": {"plan": "Free", "rate_limit": 1, "rate_current": 2, "quota_limit": 2000, "quota_current": 2000, "component": "rate_limiter"}
+  },
+  "time": 1763251200
+}

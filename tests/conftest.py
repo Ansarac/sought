@@ -82,11 +82,31 @@ def pytest_configure(config):
 class FakeResponse:
     """Just enough of `requests.Response` for the classification paths."""
 
-    def __init__(self, status_code: int = 200, text: str = "", headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int = 200,
+        text: str = "",
+        headers: dict[str, str] | None = None,
+        url: str = "",
+    ) -> None:
+        import requests
+
         self.status_code = status_code
         self.text = text
         self.content = text.encode("utf-8")
-        self.headers = headers or {}
+        # Case-insensitive, as on a real response.
+        self.headers = requests.structures.CaseInsensitiveDict(headers or {})
+        self.url = url
+        self.body_read = False
+        self.closed = False
+
+    def iter_content(self, chunk_size=1):
+        self.body_read = True
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i : i + chunk_size]
+
+    def close(self):
+        self.closed = True
 
     def json(self):
         return json.loads(self.text)
@@ -104,6 +124,7 @@ class FakeSession:
     def __init__(self, response: FakeResponse | Exception) -> None:
         self.response = response
         self.calls: list[tuple[str, dict]] = []
+        self.headers: dict[str, str] = {}
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
@@ -123,6 +144,16 @@ def isolated_cache(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("xdg-cache")
     monkeypatch.setenv("XDG_CACHE_HOME", str(root))
     return root / "sought"
+
+
+@pytest.fixture(autouse=True)
+def no_brave_api_key(monkeypatch):
+    """Keep a developer's own BRAVE_API_KEY out of every test.
+
+    With it set, the "no key" paths would quietly become "key from the
+    environment", and a doctor test would report a real key's source.
+    """
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
 
 @pytest.fixture(scope="session")

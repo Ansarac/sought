@@ -1,0 +1,11 @@
+{
+  "type": "ErrorResponse",
+  "error": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "status": 401,
+    "code": "SUBSCRIPTION_TOKEN_INVALID",
+    "detail": "The provided subscription token is invalid.",
+    "meta": {"component": "authentication"}
+  },
+  "time": 1763251200
+}

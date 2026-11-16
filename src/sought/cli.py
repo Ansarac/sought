@@ -11,7 +11,7 @@ from sought import __version__
 from sought import config as config_mod
 from sought.engines.base import GENERAL_ENGINES, OPT_IN_ENGINES, VERTICAL_SOURCES, all_source_names
 from sought.errors import ConfigError, InvariantError, NoResultsError, SoughtError, UpstreamError, UsageError
-from sought.output import print_json, print_pretty
+from sought.output import print_fetch_pretty, print_json, print_pretty
 from sought.skill import DEFAULT_SKILL_ROOT, install_skill, locate_skill
 
 if TYPE_CHECKING:
@@ -19,26 +19,32 @@ if TYPE_CHECKING:
 
     from sought.config import Config
 
+# In GENERAL_ENGINES order, so the help reads the same on every run.
+_OPT_IN = ", ".join(e for e in GENERAL_ENGINES if e in OPT_IN_ENGINES)
+
 EPILOG = f"""\
 commands:
   sought <query>            search (the default — no subcommand needed)
+  sought fetch <url>        read one page and return its content as markdown
   sought doctor             check that sought can actually work here
   sought config             show, create, or locate the config file; clear state
   sought install-skill      install the bundled Claude skill
 
-  Each takes its own --help. A leading bare `doctor`, `config` or
+  Each takes its own --help. A leading bare `fetch`, `doctor`, `config` or
   install-skill is read as the subcommand, so quote a query that starts
-  with one: sought "doctor who".
+  with one: sought "doctor who", sought "fetch api polyfill".
 
 sources:
   general (fallback chain, tried in order): {", ".join(e for e in GENERAL_ENGINES if e not in OPT_IN_ENGINES)}
-  general, opt-in (off by default):         {", ".join(sorted(OPT_IN_ENGINES))} — see [google] in `sought config --init`
+  general, opt-in (off by default):         {_OPT_IN} — see [google] and [brave_api]
+                                            in `sought config --init`
   vertical (exact, keyless APIs):           {", ".join(VERTICAL_SOURCES)}
 
 examples:
   sought "playwright stealth detection"
   sought "rust async runtime" --pretty
   sought "MCP web search" --source hn
+  sought fetch https://docs.python.org/3/library/textwrap.html --pretty
   sought doctor --offline
   sought config --init
   sought config --clear-state
@@ -88,12 +94,12 @@ def main(argv: Sequence[str]) -> int:
         return 130
 
 
-SUBCOMMANDS = ("install-skill", "doctor", "config")
+SUBCOMMANDS = ("install-skill", "doctor", "config", "fetch")
 
 
 def _dispatch(argv: list[str]) -> int:
     if _names_subcommand(argv):
-        handler = {"install-skill": _install_skill, "doctor": _doctor, "config": _config}[argv[0]]
+        handler = {"install-skill": _install_skill, "doctor": _doctor, "config": _config, "fetch": _fetch}[argv[0]]
         return handler(argv[1:])
     return _search(argv)
 
@@ -173,6 +179,50 @@ def _search(argv: list[str]) -> int:
         raise NoResultsError(f"no results for {query!r}")
     reasons = ", ".join(f"{a['engine']}={a['status']}" for a in payload["attempts"] if a["status"] != "ok")
     raise UpstreamError(f"every source failed ({reasons})")
+
+
+def _fetch(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="sought fetch",
+        description=(
+            "Fetch one URL over plain HTTP and return its readable content as markdown (HTML), or verbatim "
+            "(text, markdown, JSON). Failures are classified, never an empty page: exit 2 with the reason in "
+            "the output. Pages that need JavaScript are reported as such, not rendered."
+        ),
+    )
+    parser.add_argument("url", help="an absolute http:// or https:// URL")
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        metavar="N",
+        help="cut content after N characters, always disclosed as `truncated` (default from config; 0 = no limit)",
+    )
+    parser.add_argument("--timeout", type=int, metavar="SEC", help="request timeout (default from config)")
+    parser.add_argument("--pretty", action="store_true", help="human-readable output instead of JSON")
+    args = parser.parse_args(argv)
+
+    from sought import fetch
+
+    url = fetch.check_url(args.url)
+    cfg = _load_config(timeout=args.timeout)
+    max_chars = cfg.fetch.max_chars if args.max_chars is None else _checked_max_chars(args.max_chars)
+
+    payload = fetch.fetch(url, config=cfg, max_chars=max_chars)
+    if args.pretty:
+        print_fetch_pretty(payload)
+    else:
+        print_json(payload)
+
+    if payload["status"] == "ok":
+        return 0
+    raise UpstreamError(f"fetch failed: {payload['status']} — {payload['detail']}")
+
+
+def _checked_max_chars(value: int) -> int:
+    try:
+        return config_mod.non_negative_int(value, "--max-chars")
+    except ConfigError as exc:
+        raise UsageError(f"{exc} (got {value})") from exc
 
 
 def _doctor(argv: list[str]) -> int:

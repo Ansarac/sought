@@ -34,6 +34,7 @@ def stub_checks(monkeypatch):
     """Replace every probe so only the summary logic is under test."""
     monkeypatch.setattr(doctor, "_python", lambda: doctor.Check("python", ok=True, detail="3.14"))
     monkeypatch.setattr(doctor, "_playwright_package", lambda: doctor.Check("pw", ok=True, detail="ok"))
+    monkeypatch.setattr(doctor, "_fetch_extraction", lambda: doctor.Check("fetch", ok=True, detail="ok"))
     monkeypatch.setattr(doctor, "_config_checks", lambda _cfg: [])
     monkeypatch.setattr(doctor, "_tls_note", lambda _cfg, *, probes: None)  # noqa: ARG005
     monkeypatch.setattr(doctor, "_proxy_checks", lambda _cfg: [])
@@ -740,3 +741,25 @@ def test_a_launch_that_hangs_is_a_failure_not_a_hang(monkeypatch):
     check = doctor._chromium(fix=False)  # noqa: SLF001
     assert not check.ok
     assert "did not finish within 60s" in check.detail
+
+
+def test_the_fetch_extractor_runs_offline():
+    check = doctor._fetch_extraction()  # noqa: SLF001
+    assert check.ok, check.detail
+    assert check.required is False
+
+
+def test_a_broken_fetch_extractor_warns_without_failing(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_readability(name, *args, **kwargs):
+        if name == "sought.fetch":
+            raise ImportError("No module named 'readability'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_readability)
+    check = doctor._fetch_extraction()  # noqa: SLF001
+    assert (check.ok, check.required) == (False, False)
+    assert "readability" in check.detail
