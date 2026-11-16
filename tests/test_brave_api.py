@@ -246,6 +246,81 @@ def test_429_names_windows_from_the_policy_and_does_not_call_a_zero_limit_spent(
     )
 
 
+def _refusal(http, response, saved, headers):
+    http(response(429, saved("brave_api_429.synthetic.json"), headers=headers))
+    with pytest.raises(EngineFailure) as exc:
+        brave_api.search("x", config=KEYED)
+    assert exc.value.status == "rate_limited"
+    return exc.value
+
+
+MONTH_SPENT = {
+    "X-RateLimit-Limit": "1, 2000",
+    "X-RateLimit-Remaining": "1, 0",
+    "X-RateLimit-Reset": "1, 1209600",
+    "X-RateLimit-Policy": "1;w=1, 2000;w=2592000",
+}
+
+
+def test_a_spent_monthly_window_holds_the_engine_until_it_resets(http, response, saved):
+    failure = _refusal(http, response, saved, MONTH_SPENT)
+
+    assert failure.hold is not None
+    assert failure.hold.seconds == 1209600
+    assert failure.hold.reason == "quota spent (30d window), held until it resets per X-RateLimit-Reset"
+
+
+def test_a_spent_one_second_window_keeps_the_ordinary_cooldown(http, response, saved):
+    headers = {**MONTH_SPENT, "X-RateLimit-Remaining": "0, 1500"}
+    assert _refusal(http, response, saved, headers).hold is None
+
+
+def test_a_zero_limit_month_is_never_a_hold(http, response, saved):
+    """Measured on a working key: limit 0, remaining 0 on the 30-day window is "no cap", not "spent"."""
+    headers = {
+        "X-RateLimit-Limit": "50, 0",
+        "X-RateLimit-Remaining": "0, 0",
+        "X-RateLimit-Reset": "1, 1263310",
+        "X-RateLimit-Policy": "50;w=1, 0;w=2592000",
+    }
+    assert _refusal(http, response, saved, headers).hold is None
+
+
+@pytest.mark.parametrize(
+    "reset",
+    [
+        "99999999999",  # centuries
+        "2600000",  # longer than its own 30-day window
+        "soon",  # not a number of seconds
+    ],
+)
+def test_an_implausible_reset_gets_the_ordinary_cooldown(http, response, saved, reset):
+    headers = {**MONTH_SPENT, "X-RateLimit-Reset": f"1, {reset}"}
+    assert _refusal(http, response, saved, headers).hold is None
+
+
+def test_without_a_policy_the_reset_still_decides(http, response, saved):
+    headers = {k: v for k, v in MONTH_SPENT.items() if k != "X-RateLimit-Policy"}
+    failure = _refusal(http, response, saved, headers)
+    assert failure.hold is not None
+    assert failure.hold.reason.startswith("quota spent (window 2)")
+
+
+def test_the_hold_reaches_the_attempt_and_the_cooldown_file(http, response, saved, isolated_cache, monkeypatch):
+    from sought import state
+
+    monkeypatch.setattr(state, "_now", lambda: 1_800_000_000.0)
+    http(response(429, saved("brave_api_429.synthetic.json"), headers=MONTH_SPENT))
+    cfg = replace(KEYED, order=("brave_api",))
+    search_mod.run("x", config=cfg, source="brave_api")
+
+    (cooldown,) = state.active_cooldowns(config=cfg)
+    assert cooldown.until == 1_800_000_000.0 + 1209600
+    assert "quota spent (30d window)" in cooldown.describe()
+    skip = state.cooling_down(["brave_api"], config=cfg)["brave_api"]
+    assert skip.detail.startswith("quota spent (30d window), held until it resets per X-RateLimit-Reset; cooling down")
+
+
 def test_429_without_headers_is_still_rate_limited(http, response):
     http(response(429, ""))
 

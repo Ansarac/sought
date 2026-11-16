@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -72,6 +72,19 @@ class ResultList(list[Result]):
 
 
 @dataclass(frozen=True)
+class Hold:
+    """An engine's own word that it will refuse for longer than the configured cooldown.
+
+    Only an engine that *knows* when it will answer again sets one: Brave's API
+    reports when a spent monthly quota resets. `state.note_outcome` cools the
+    engine until then (bounded), and the skip detail carries `reason`.
+    """
+
+    seconds: float
+    reason: str
+
+
+@dataclass(frozen=True)
 class Attempt:
     """The record of one engine being asked, successfully or not.
 
@@ -84,6 +97,8 @@ class Attempt:
     status: Status
     detail: str = ""
     count: int = 0
+    # Not part of the envelope: read by `state.note_outcome` and nothing else.
+    hold: Hold | None = field(default=None, compare=False, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         """Serialise for the JSON envelope."""
@@ -103,11 +118,12 @@ class EngineFailure(Exception):  # noqa: N818 — this is a value carrier, not a
     is what makes a search tool untrustworthy.
     """
 
-    def __init__(self, status: Status, detail: str = "") -> None:
-        """Record why an engine could not answer."""
+    def __init__(self, status: Status, detail: str = "", *, hold: Hold | None = None) -> None:
+        """Record why an engine could not answer, and how long it says it will keep refusing."""
         super().__init__(detail or status)
         self.status: Status = status
         self.detail = detail
+        self.hold = hold
 
 
 class Engine(Protocol):

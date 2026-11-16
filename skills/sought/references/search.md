@@ -84,7 +84,9 @@ not help, and `--fresh` does not override it: use another engine or a vertical
 source. If the cause has been fixed (the user changed network or proxy),
 `sought config --clear-state` ends the cooldowns; do not run it just to retry
 an engine that refused you. `sought doctor` lists active cooldowns on its
-`cooldowns:` line.
+`cooldowns:` line. A `brave_api` detail starting `quota spent (30d window)`
+is the plan's monthly quota: it is held until the reset Brave reported, which
+can be days away.
 
 ## `cached`
 

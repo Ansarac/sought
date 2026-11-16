@@ -60,6 +60,10 @@ is not Brave's JSON is a firewall and stays `blocked`.
 On a working key the 30-day window reported `limit 0, remaining 0`
 (`X-RateLimit-Policy: 50;w=1, 0;w=2592000`), so a 0 limit is "no cap
 reported", never "spent"; windows are named from the policy header.
+A 429 with a spent window resetting an hour or more ahead (the monthly quota)
+carries a `Hold`, and the cooldown lasts until that reset instead of
+`cooldown_seconds`; a reset beyond its window or 31 days is distrusted and
+gets the ordinary cooldown, and `--clear-state` still ends it.
 
 **Do not add Bing.** It answers blocked requests with HTTP 200 and a page of
 unrelated results rather than an error. This is what `low_relevance` exists to

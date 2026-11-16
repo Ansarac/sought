@@ -145,6 +145,12 @@ still recorded, as `rate_limited` with a detail that says it was not asked:
 Only `rate_limited` starts a cooldown; `blocked` is usually a local fault
 being fixed, and `timeout`, `empty` and `error` are not refusals. An `ok`
 clears it. If every browser engine is cooling down, Chromium is not launched.
+One exception to the fixed length: when `brave_api`'s 429 reports a spent
+quota window that resets an hour or more ahead (the plan's monthly quota),
+the cooldown lasts until that reset, and the skip detail starts
+`quota spent (30d window), held until it resets per X-RateLimit-Reset`. A
+reset longer than its own window, or than 31 days, is not believed and gets
+the ordinary cooldown. `--clear-state` ends it like any other.
 A skip counts as a failure for the exit code, exactly like a live 429.
 `doctor` lists active cooldowns (offline too) and does not probe a cooling
 engine.

@@ -17,7 +17,7 @@ import pytest
 from sought import search as search_mod
 from sought import state
 from sought.config import Config
-from sought.engines.base import Attempt, EngineFailure, Result
+from sought.engines.base import Attempt, EngineFailure, Hold, Result
 
 T0 = 1_800_000_000.0
 HIT = [Result("Playwright", "https://playwright.dev", "playwright docs")]
@@ -170,6 +170,51 @@ def test_the_detail_names_both_times_and_the_original_refusal(clock):
     assert time.strftime("%H:%M", time.localtime(T0 + 600)) in detail
     assert time.strftime("%H:%M", time.localtime(T0)) in detail
     assert 'bot wall: "verifying"' in detail
+
+
+MONTH = Hold(14 * 86400, "quota spent (30d window), held until it resets per X-RateLimit-Reset")
+
+
+def test_a_hold_cools_until_the_engine_said(clock):
+    cfg = Config(cooldown_seconds=600)
+    state.note_outcome(Attempt("brave_api", "rate_limited", "HTTP 429", hold=MONTH), config=cfg)
+
+    clock(600 + 1)
+    skip = state.cooling_down(["brave_api"], config=cfg)["brave_api"]
+    assert skip.detail.startswith(f"{MONTH.reason}; cooling down until ")
+    # A month away is not today: the date is in the detail, not just a time.
+    assert time.strftime("%Y-%m-%d", time.localtime(T0 + MONTH.seconds)) in skip.detail
+    clock(MONTH.seconds)
+    assert state.cooling_down(["brave_api"], config=cfg) == {}
+
+
+def test_a_hold_shorter_than_the_cooldown_changes_nothing(clock):
+    cfg = Config(cooldown_seconds=600)
+    state.note_outcome(Attempt("brave_api", "rate_limited", "HTTP 429", hold=Hold(60, "soon")), config=cfg)
+    (cooldown,) = state.active_cooldowns(config=cfg)
+    assert (cooldown.until, cooldown.reason) == (T0 + 600, "")
+
+
+def test_a_hold_is_not_applied_when_cooldowns_are_off(clock):
+    off = Config(cooldown_seconds=0)
+    state.note_outcome(Attempt("brave_api", "rate_limited", "HTTP 429", hold=MONTH), config=off)
+    assert state.cooling_down(["brave_api"], config=Config()) == {}
+
+
+def test_clear_state_ends_a_hold(clock, isolated_cache):
+    """The user bought credits, or a new month began early."""
+    state.note_outcome(Attempt("brave_api", "rate_limited", "HTTP 429", hold=MONTH), config=Config())
+    assert state.clear_state().cooldowns
+    assert state.cooling_down(["brave_api"], config=Config()) == {}
+
+
+def test_a_cooldown_file_without_reasons_still_reads(clock, isolated_cache):
+    (isolated_cache / state.COOLDOWN_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (isolated_cache / state.COOLDOWN_FILE).write_text(
+        json.dumps({"brave": {"until": T0 + 60, "at": T0, "detail": "HTTP 429"}})
+    )
+    (cooldown,) = state.active_cooldowns(config=Config())
+    assert cooldown.reason == ""
 
 
 def test_a_single_source_respects_the_cooldown(engines):

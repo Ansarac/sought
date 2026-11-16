@@ -95,10 +95,14 @@ class Cooldown:
     until: float
     at: float
     detail: str
+    # Set when the engine said how long it would refuse (`Hold`): why `until`
+    # is not the configured cooldown.
+    reason: str = ""
 
     def describe(self) -> str:
         """`brave until 23:14 (last refusal at 23:04: HTTP 429)` — for a report, not an attempt."""
-        return f"{self.engine} until {_clock(self.until)} (last refusal at {_clock(self.at)}: {self.detail})"
+        why = f"{self.reason}; " if self.reason else ""
+        return f"{self.engine} until {_clock(self.until)} ({why}last refusal at {_clock(self.at)}: {self.detail})"
 
 
 def active_cooldowns(*, config: Config) -> list[Cooldown]:
@@ -128,6 +132,11 @@ def note_outcome(attempt: Attempt, *, config: Config) -> None:
     (a proxy, a certificate) the user is busy fixing, and holding the engine
     back would hide whether the fix worked; `timeout`, `empty` and `error` are
     not refusals at all. An `ok` ends any cooldown early.
+
+    A refusal carrying a `Hold` — the engine's own word on when it will answer
+    again, such as Brave's API reporting when a spent monthly quota resets —
+    cools for that long instead, when it is longer than the configured
+    cooldown. The engine bounds it; `--clear-state` still ends it.
     """
     if config.cooldown_seconds <= 0 or attempt.engine not in _COOLED:
         return
@@ -138,11 +147,15 @@ def note_outcome(attempt: Attempt, *, config: Config) -> None:
     now = _now()
     live = {name: entry for name, entry in entries.items() if entry["until"] > now}
     if attempt.status == "rate_limited":
-        live[attempt.engine] = {
+        entry: dict[str, Any] = {
             "until": now + config.cooldown_seconds,
             "detail": attempt.detail or "rate limited",
             "at": now,
         }
+        if attempt.hold is not None and attempt.hold.seconds > config.cooldown_seconds:
+            entry["until"] = now + attempt.hold.seconds
+            entry["reason"] = attempt.hold.reason
+        live[attempt.engine] = entry
     else:
         live.pop(attempt.engine, None)
 
@@ -155,15 +168,16 @@ def _live_cooldowns() -> list[Cooldown]:
     entries = _read_cooldowns()
     now = _now()
     return [
-        Cooldown(name, entry["until"], entry["at"], entry["detail"])
+        Cooldown(name, entry["until"], entry["at"], entry["detail"], entry.get("reason", ""))
         for name in GENERAL_ENGINES
         if name in _COOLED and (entry := entries.get(name)) is not None and entry["until"] > now
     ]
 
 
 def _cooldown_detail(cooldown: Cooldown) -> str:
+    why = f"{cooldown.reason}; " if cooldown.reason else ""
     return (
-        f"cooling down until {_clock(cooldown.until)}, not asked this time "
+        f"{why}cooling down until {_clock(cooldown.until)}, not asked this time "
         f"(last refusal at {_clock(cooldown.at)}: {cooldown.detail})"
     )
 
@@ -188,6 +202,7 @@ def _read_cooldowns() -> dict[str, dict[str, Any]]:
         and _is_number(entry.get("until"))
         and _is_number(entry.get("at"))
         and isinstance(entry.get("detail"), str)
+        and isinstance(entry.get("reason", ""), str)
     }
 
 
