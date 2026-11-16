@@ -52,13 +52,17 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_BAD_REQUEST = 400
 _HTTP_SERVER_ERROR = 500
 
-# Brave reports per-window quotas as comma-separated lists, one entry per
-# window (per second, then per month), in these headers.
-_QUOTA_HEADERS = (
-    ("limit", "X-RateLimit-Limit"),
-    ("remaining", "X-RateLimit-Remaining"),
-    ("reset in s", "X-RateLimit-Reset"),
-)
+# Brave reports quotas per window as comma-separated lists, one entry per
+# window, and `X-RateLimit-Policy` names each window's length (`50;w=1,
+# 0;w=2592000`). Measured on a working key: the 30-day window read
+# `limit 0, remaining 0` while every request succeeded — a 0 limit is "no
+# fixed cap reported", not "spent", and must not be printed as if it were.
+_LIMIT_HEADER = "X-RateLimit-Limit"
+_REMAINING_HEADER = "X-RateLimit-Remaining"
+_RESET_HEADER = "X-RateLimit-Reset"
+_POLICY_HEADER = "X-RateLimit-Policy"
+_WINDOW_RE = re.compile(r"\bw=(\d+)")
+_SECONDS_PER = (("d", 86400), ("h", 3600), ("m", 60))
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -234,11 +238,53 @@ def _code_note(error: dict[str, Any] | None) -> str:
 
 
 def _quota(resp: requests.Response) -> str:
-    """Say what the quota headers say, in the order Brave gives them (per second, per month)."""
-    parts = [f"{label} {resp.headers[h]}" for label, h in _QUOTA_HEADERS if resp.headers.get(h)]
-    if not parts:
-        return ""
-    return "quota " + "; ".join(parts) + " (per-second, per-month windows)"
+    """Describe each quota window the headers report, by its length, and which one is spent.
+
+    Window lengths come from `X-RateLimit-Policy`; without it the windows are
+    numbered rather than guessed. A window with a positive limit and nothing
+    remaining is marked exhausted; one whose limit is 0 is reported as having
+    no cap, never as spent (see the header comment above).
+    """
+    limits = _header_list(resp, _LIMIT_HEADER)
+    remaining = _header_list(resp, _REMAINING_HEADER)
+    resets = _header_list(resp, _RESET_HEADER)
+    windows = [m.group(1) for m in map(_WINDOW_RE.search, _header_list(resp, _POLICY_HEADER)) if m]
+    count = max(len(limits), len(remaining), len(resets))
+    parts = []
+    for i in range(count):
+        name = f"{_duration(windows[i])} window" if i < len(windows) else f"window {i + 1}"
+        limit = limits[i] if i < len(limits) else ""
+        left = remaining[i] if i < len(remaining) else ""
+        facts = []
+        if limit == "0":
+            facts.append("no cap reported (limit 0)")
+        else:
+            if limit:
+                facts.append(f"limit {limit}")
+            if left:
+                facts.append(f"remaining {left}")
+        if i < len(resets) and resets[i]:
+            facts.append(f"resets in {_duration(resets[i])}")
+        if limit not in {"", "0"} and left == "0":
+            facts.append("exhausted")
+        parts.append(f"{name}: {', '.join(facts)}")
+    return "quota — " + "; ".join(parts) if parts else ""
+
+
+def _header_list(resp: requests.Response, header: str) -> list[str]:
+    value = resp.headers.get(header) or ""
+    return [item.strip() for item in value.split(",")] if value.strip() else []
+
+
+def _duration(seconds: str) -> str:
+    """`1209600` → `14d`; anything that is not a whole number of seconds is passed through."""
+    if not seconds.isdigit():
+        return seconds
+    n = int(seconds)
+    for unit, size in _SECONDS_PER:
+        if n >= size:
+            return f"{n // size}{unit}"
+    return f"{n}s"
 
 
 def _scrub(detail: str, key: str) -> str:

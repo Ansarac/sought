@@ -272,7 +272,7 @@ def _config(argv: list[str]) -> int:
         print(f"{path} does not exist — using builtin defaults.")
         print("Run `sought config --init` to write an annotated one.")
         return 0
-    print(path.read_text(encoding="utf-8"), end="")
+    print(config_mod.redact_secrets(path.read_text(encoding="utf-8")), end="")
     return 0
 
 

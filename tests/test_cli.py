@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import tomllib
 
 import pytest
 
 from sought import cli
+from sought import config as config_mod
 from sought.config import Config
 from sought.errors import SoughtError
 
@@ -328,3 +330,46 @@ def test_clear_state_does_not_combine_with_other_config_actions(other, capsys):
         cli.main(["config", "--clear-state", other])
     assert exc.value.code == 2
     assert "not allowed with" in capsys.readouterr().err
+
+
+SECRET_KEY = "BSAfakeKeyValue0123456789abcdef"  # noqa: S105 — a fake, for the redaction test
+
+
+@pytest.mark.parametrize(
+    ("config_text", "secrets", "kept"),
+    [
+        (f'[brave_api]\napi_key = "{SECRET_KEY}"\n', [SECRET_KEY], ['api_key = "***"']),
+        (f"[brave_api]\napi_key = '{SECRET_KEY}'  # mine\n", [SECRET_KEY], ["api_key = '***'  # mine"]),
+        # Odd formatting the line pattern misses is still caught through the parsed value.
+        (f'[brave_api]\n"api_key"="{SECRET_KEY}"\n', [SECRET_KEY], ["[brave_api]"]),
+        (
+            '[proxy]\nhttps = "http://bob:p@ss:w0rd@proxy.corp:3128"\nhttp = "http://proxy.corp:8080"\n',
+            ["bob", "p@ss:w0rd"],
+            ['https = "http://***@proxy.corp:3128"', 'http = "http://proxy.corp:8080"'],
+        ),
+    ],
+)
+def test_config_show_hides_secrets(tmp_path, monkeypatch, capsys, config_text, secrets, kept):  # noqa: PLR0913, PLR0917
+    path = tmp_path / "config.toml"
+    path.write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", path)
+
+    assert cli.main(["config"]) == 0
+
+    out = capsys.readouterr().out
+    for secret in secrets:
+        assert secret not in out
+    for text in kept:
+        assert text in out
+    assert out.startswith(config_mod.REDACTION_NOTE)
+    tomllib.loads(out)  # still a valid config file
+
+
+def test_config_show_without_secrets_is_the_file_verbatim(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "config.toml"
+    path.write_text(config_mod.DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", path)
+
+    assert cli.main(["config"]) == 0
+
+    assert capsys.readouterr().out == config_mod.DEFAULT_CONFIG_TEMPLATE

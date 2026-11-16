@@ -50,9 +50,13 @@ wall, and a 429 there is a real quota (`rate_limited`, with the
 `BRAVE_API_KEY`) is what enables it; never in `DEFAULT_ORDER`, and asked for
 without a key it records an `error` naming both. The key must never reach
 output, attempts, state or doctor — `_scrub` and the key-leak test enforce
-that. Measured: an invalid key gets HTTP 422 `SUBSCRIPTION_TOKEN_INVALID`,
+that, and `sought config` prints the file through `config.redact_secrets`
+(it printed the key verbatim until measured). Measured: an invalid key gets HTTP 422 `SUBSCRIPTION_TOKEN_INVALID`,
 not 401, so a rejected key is recognised by Brave's error code; a 401/403 that
 is not Brave's JSON is a firewall and stays `blocked`.
+On a working key the 30-day window reported `limit 0, remaining 0`
+(`X-RateLimit-Policy: 50;w=1, 0;w=2592000`), so a 0 limit is "no cap
+reported", never "spent"; windows are named from the policy header.
 
 **Do not add Bing.** It answers blocked requests with HTTP 200 and a page of
 unrelated results rather than an error. This is what `low_relevance` exists to
