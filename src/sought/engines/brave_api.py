@@ -12,7 +12,8 @@ with the quota headers in the detail.
 Opt-in without a separate switch: a key (`brave_api.api_key`, or the
 `BRAVE_API_KEY` environment variable when that is empty) is what turns it on.
 Asked for without one, it records an `error` naming both, and is never skipped
-silently. Never in the default order.
+silently. Never in `DEFAULT_ORDER`; with a key, `Config.chain_order` puts it
+first unless `engines.order` names it (opt out: `brave_api.auto_first`).
 
 The key travels in one request header and nowhere else. Every detail this
 module produces is passed through `_scrub` before it leaves, so neither an

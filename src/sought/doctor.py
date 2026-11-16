@@ -244,10 +244,13 @@ def _config_checks(cfg: Config) -> list[Check]:
 
     known = set(GENERAL_ENGINES)
     unknown = [e for e in cfg.order if e not in known]
+    detail = " → ".join(cfg.chain_order())
+    if cfg.brave_api_auto_first():
+        detail += "  [brave_api first: key set, not named in engines.order]"
     order = Check(
         "engine order",
         ok=not unknown,
-        detail=" → ".join(cfg.order) + (f"  [unknown: {', '.join(unknown)}]" if unknown else ""),
+        detail=detail + (f"  [unknown: {', '.join(unknown)}]" if unknown else ""),
     )
     return [where, order]
 
@@ -507,7 +510,7 @@ def _engine_probes(cfg: Config, *, chromium_ok: bool, cooling: list[Cooldown]) -
     checks: list[Check] = []
     probed = 0
     skipped_cooling: list[str] = []
-    for name in cfg.order:
+    for name in cfg.chain_order():
         if name not in GENERAL_ENGINES:
             continue
         if name == "google" and not cfg.google.enabled:
@@ -643,7 +646,7 @@ def _brave_api_line(cfg: Config, *, offline: bool, cooling: list[Cooldown]) -> C
     real query against the user's quota, which is why `--offline` never makes
     one.
     """
-    in_order = "brave_api" in cfg.order
+    in_order = "brave_api" in cfg.chain_order()
     if not cfg.brave_api.resolve()[0]:
         if in_order and not offline:
             return None  # `_engine_probes` reported it
@@ -654,7 +657,7 @@ def _brave_api_line(cfg: Config, *, offline: bool, cooling: list[Cooldown]) -> C
     if in_order:
         return None  # probed with the chain
     check, _outcome = _probe(cfg, "brave_api", chromium_ok=True, cooled={c.engine for c in cooling})
-    check.detail += f" [{source}; not in engines.order: reached only by --source brave_api]"
+    check.detail += f" [{source}; auto_first = false and not in engines.order: reached only by --source brave_api]"
     return check
 
 

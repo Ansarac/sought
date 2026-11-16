@@ -35,7 +35,7 @@ _GENERAL = {
     "marginalia": marginalia.search,
     # Opt-in, and never in the default order; gated by `_not_asked`.
     "google": google.search,
-    # Opt-in by API key, never in the default order. Plain HTTP, so it is in
+    # Opt-in by API key; with one, first in `Config.chain_order`. Plain HTTP, so it is in
     # neither browser set and asking for it launches no Chromium. Without a key
     # it records its own `error` attempt rather than being skipped.
     "brave_api": brave_api.search,
@@ -62,7 +62,7 @@ def run(query: str, *, config: Config, source: str | None = None, cache: CacheMo
     No cache mode bypasses engine cooldowns. Asking a refusing engine again
     early is exactly the load the cooldown exists to prevent.
     """
-    key = state.result_key(query, source=source, order=config.order, limit=config.limit)
+    key = state.result_key(query, source=source, order=config.chain_order(), limit=config.limit)
     if cache == "use":
         hit = state.load_result(key, ttl=config.cache_ttl_seconds)
         if hit is not None:
@@ -101,23 +101,29 @@ def _single(query: str, *, config: Config, source: str) -> dict[str, Any]:
 
 def _chain(query: str, *, config: Config) -> dict[str, Any]:
     attempts: list[Attempt] = []
-    order = [e for e in config.order if e in _GENERAL]
+    order = [e for e in config.chain_order() if e in _GENERAL]
     if not order:
         msg = f"engines.order lists no known engine (known: {', '.join(GENERAL_ENGINES)})"
         raise UsageError(msg)
 
     skips = _not_asked(order, config=config)
     with ExitStack() as stack:
-        # Chromium is the expensive part of a search; launching it only to
-        # skip every engine that would use it is pure cost. Engines with a
-        # browser of their own (google) launch it themselves, only when asked.
-        needs_browser = any(e in BROWSER_ENGINES and e not in skips for e in order)
-        browser = _browser_or_none(stack, config, needed=needs_browser, attempts=attempts)
+        # Chromium is the expensive part of a search (measured: ~2.4 s of a
+        # 4.6 s chain), so it is launched when the first engine that needs it
+        # is reached, not before the chain starts. An engine ahead of it that
+        # answers — brave_api, marginalia — then costs no launch at all, and
+        # skipped engines never cause one. Engines with a browser of their own
+        # (google) launch it themselves, only when asked.
+        browser: Browser | None = None
+        launched = False
 
         for name in order:
             if name in skips:
                 attempts.append(skips[name])
                 continue
+            if name in BROWSER_ENGINES and not launched:
+                launched = True
+                browser = _browser_or_none(stack, config, needed=True, attempts=attempts)
             if browser is None and name in BROWSER_ENGINES:
                 attempts.append(Attempt(name, "error", _NO_BROWSER))
                 continue

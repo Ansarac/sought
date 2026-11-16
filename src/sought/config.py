@@ -139,12 +139,17 @@ max_per_hour = 100
 # you put the key in it. sought never prints the key, and `sought doctor` says
 # only whether one is set and where it came from.
 #
-# A key alone does not put it in the chain: add "brave_api" to [engines]
-# order, or ask for it with `--source brave_api`. Asked for without a key, it
-# records an `error` attempt naming both places a key can go. The API returns
-# at most 20 results per query; a larger limit is capped, and the attempt says
-# so.
+# With a key, brave_api goes FIRST in the chain unless [engines] order names
+# it — then it sits exactly where the order puts it. It is first because it is
+# the fastest engine (no browser) and its 429 is a real quota, after which the
+# chain moves on to the next engine as usual. Each search it answers spends
+# one request of your plan; set auto_first = false to keep it out of the chain
+# unless the order names it (`--source brave_api` always reaches it). Without
+# a key nothing changes. Asked for without a key, it records an `error`
+# attempt naming both places a key can go. The API returns at most 20 results
+# per query; a larger limit is capped, and the attempt says so.
 api_key = ""
+auto_first = true
 """
 
 BRAVE_API_KEY_ENV = "BRAVE_API_KEY"
@@ -160,6 +165,7 @@ class BraveApiConfig:
     """
 
     api_key: str = field(default="", repr=False)
+    auto_first: bool = True
 
     def resolve(self) -> tuple[str, str]:
         """Return the key to use and where it came from: "config", "env", or "" for none.
@@ -256,6 +262,26 @@ class Config:
     fetch: FetchConfig = field(default_factory=FetchConfig)
     source_path: Path | None = None
 
+    def chain_order(self) -> tuple[str, ...]:
+        """Return the general engines the chain asks, in order: `order`, with brave_api first when keyed.
+
+        A brave_api key is the user saying they want it, and placed last it
+        would never be reached — brave or startpage answer first. So with a
+        key (config or environment) and `brave_api.auto_first` on, it leads
+        the chain unless `order` names it, in which case the user's placement
+        stands. Not based on whether `order` was written: `config --init`
+        writes the default order out, so that would miss most users.
+        `DEFAULT_ORDER` itself never contains it — without a key, nothing
+        changes and no attempt is added.
+        """
+        if "brave_api" in self.order or not self.brave_api.auto_first or not self.brave_api.resolve()[0]:
+            return self.order
+        return ("brave_api", *self.order)
+
+    def brave_api_auto_first(self) -> bool:
+        """Say whether `chain_order` put brave_api first rather than `order` naming it."""
+        return self.chain_order() != self.order
+
 
 def ensure_config_file(path: Path = CONFIG_PATH) -> tuple[Path, bool]:
     """Create the annotated default config if absent.
@@ -346,7 +372,10 @@ def _from_mapping(raw: dict, path: Path | None) -> Config:
                 path,
             ),
         ),
-        brave_api=BraveApiConfig(api_key=_str(brave_api_raw.get("api_key", ""), "brave_api.api_key", path)),
+        brave_api=BraveApiConfig(
+            api_key=_str(brave_api_raw.get("api_key", ""), "brave_api.api_key", path),
+            auto_first=_bool(brave_api_raw.get("auto_first", True), "brave_api.auto_first", path),
+        ),
         fetch=FetchConfig(
             max_chars=non_negative_int(
                 fetch_raw.get("max_chars", DEFAULT_FETCH_MAX_CHARS),
