@@ -158,15 +158,41 @@ def test_an_unknown_source_is_rejected_before_any_network_call(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-def test_install_skill_print_writes_the_skill_to_stdout(capsys):
+def test_install_skill_print_writes_the_skill_to_stdout_and_lists_its_files(capsys):
     assert cli.main(["install-skill", "--print"]) == 0
-    assert "WebFetch" in capsys.readouterr().out
+    out, err = capsys.readouterr()
+    assert "sought fetch" in out
+    assert "references/search.md" in err
 
 
 def test_install_skill_writes_into_dest(tmp_path, capsys):
     assert cli.main(["install-skill", "--dest", str(tmp_path)]) == 0
     assert (tmp_path / "sought" / "SKILL.md").is_file()
+    assert (tmp_path / "sought" / "references" / "fetch.md").is_file()
     assert "installed" in capsys.readouterr().out
+
+
+def test_install_skill_target_pi_installs_where_pi_looks(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi-agent"))
+    assert cli.main(["install-skill", "--target", "pi"]) == 0
+    assert (tmp_path / "pi-agent" / "skills" / "sought" / "SKILL.md").is_file()
+    assert str(tmp_path / "pi-agent" / "skills" / "sought") in capsys.readouterr().out
+
+
+def test_install_skill_says_which_files_it_left_alone(tmp_path, capsys):
+    assert cli.main(["install-skill", "--dest", str(tmp_path)]) == 0
+    stray = tmp_path / "sought" / "notes.md"
+    stray.write_text("mine", encoding="utf-8")
+    assert cli.main(["install-skill", "--dest", str(tmp_path), "--force"]) == 0
+    assert f"left untouched (not part of the bundled skill): {stray}" in capsys.readouterr().out
+    assert stray.is_file()
+
+
+def test_install_skill_target_and_dest_are_exclusive(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["install-skill", "--target", "pi", "--dest", str(tmp_path)])
+    assert exc.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_config_path_prints_the_path(capsys):
