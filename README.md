@@ -54,8 +54,29 @@ Then:
 
 ```bash
 sought doctor --fix          # installs chromium if missing
-sought install-skill         # optional: install the Claude skill
+sought install-skill         # optional: install the agent skill for Claude Code
 ```
+
+### The agent skill
+
+`skills/sought/` is an [Agent Skills](https://agentskills.io/specification)
+skill: a short `SKILL.md` that an agent loads when it needs to search or read
+a page, plus `references/` it opens only when a situation calls for the
+detail. It needs nothing from the agent but a shell, so the same skill serves
+agents with built-in web tools (Claude Code, which can keep using WebFetch for
+known URLs) and agents without them (pi, which reads pages with
+`sought fetch`).
+
+```bash
+sought install-skill                 # ~/.claude/skills/sought/   (Claude Code)
+sought install-skill --target pi     # ~/.pi/agent/skills/sought/ (pi; follows PI_CODING_AGENT_DIR)
+sought install-skill --target agents # ~/.agents/skills/sought/   (the shared Agent Skills location; pi reads it too)
+sought install-skill --dest DIR      # DIR/sought/
+sought install-skill --print         # show SKILL.md and list the skill's files
+```
+
+Re-run with `--force` after upgrading sought. It overwrites the files the
+skill ships and lists, but never deletes, anything else in that directory.
 
 ## Use
 
@@ -568,7 +589,7 @@ just check      # lint + test
 
 Or directly: `uv run pytest`, `uv run ruff check .`.
 
-The Claude skill in `skills/sought/` is force-included into the wheel, so
+The agent skill in `skills/sought/` (the whole directory) is force-included into the wheel, so
 `uv tool install` alone is enough for `sought install-skill` to work with no
 checkout present.
 

@@ -12,7 +12,7 @@ from sought import config as config_mod
 from sought.engines.base import GENERAL_ENGINES, OPT_IN_ENGINES, VERTICAL_SOURCES, all_source_names
 from sought.errors import ConfigError, InvariantError, NoResultsError, SoughtError, UpstreamError, UsageError
 from sought.output import print_fetch_pretty, print_json, print_pretty
-from sought.skill import DEFAULT_SKILL_ROOT, install_skill, locate_skill
+from sought.skill import DEFAULT_TARGET, TARGETS, install_skill, locate_skill, skill_files, skill_roots
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -28,7 +28,7 @@ commands:
   sought fetch <url>        read one page and return its content as markdown
   sought doctor             check that sought can actually work here
   sought config             show, create, or locate the config file; clear state
-  sought install-skill      install the bundled Claude skill
+  sought install-skill      install the bundled agent skill (Claude Code, pi, ...)
 
   Each takes its own --help. A leading bare `fetch`, `doctor`, `config` or
   install-skill is read as the subcommand, so quote a query that starts
@@ -306,25 +306,44 @@ def _clear_state() -> int:
 
 
 def _install_skill(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="sought install-skill", description="Install the bundled Claude skill.")
-    parser.add_argument(
-        "--dest",
-        type=Path,
-        default=DEFAULT_SKILL_ROOT,
-        help=f"skills root (default {DEFAULT_SKILL_ROOT})",
+    roots = skill_roots()
+    parser = argparse.ArgumentParser(
+        prog="sought install-skill",
+        description=(
+            "Install the bundled agent skill (SKILL.md and its references/) into an agent's skills directory.\n"
+            "One skill serves every agent that reads the Agent Skills format."
+        ),
+        epilog="targets:\n" + "\n".join(f"  {name:<8} {roots[name]}" for name in TARGETS),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--force", action="store_true", help="overwrite an existing SKILL.md")
-    parser.add_argument("--print", dest="show", action="store_true", help="print the skill instead of installing it")
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument(
+        "--target",
+        choices=TARGETS,
+        default=DEFAULT_TARGET,
+        help=f"which agent's user skills directory to install into (default {DEFAULT_TARGET})",
+    )
+    where.add_argument("--dest", type=Path, help="any other skills root; the skill goes in DEST/sought/")
+    parser.add_argument("--force", action="store_true", help="overwrite an existing install")
+    parser.add_argument(
+        "--print", dest="show", action="store_true", help="print SKILL.md and list the skill's files instead"
+    )
     args = parser.parse_args(argv)
 
     if args.show:
         source, branch = locate_skill()
-        print(f"# source: {source} ({branch})", file=sys.stderr)
+        print(f"# source: {source.parent} ({branch})", file=sys.stderr)
+        for rel in skill_files(source.parent):
+            print(f"#   {rel.as_posix()}", file=sys.stderr)
         print(source.read_text(encoding="utf-8"), end="")
         return 0
 
-    dest = install_skill(dest_root=args.dest, force=args.force)
-    print(f"installed: {dest}")
+    dest_root = args.dest if args.dest is not None else roots[args.target]
+    installed = install_skill(dest_root=dest_root, force=args.force)
+    n = len(installed.written)
+    print(f"installed: {installed.directory} ({n} file{'s' if n != 1 else ''})")
+    for path in installed.untouched:
+        print(f"  left untouched (not part of the bundled skill): {path}")
     return 0
 
 

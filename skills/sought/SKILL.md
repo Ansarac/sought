@@ -1,280 +1,140 @@
 ---
 name: sought
-description: Search the web with an explicit audit trail, and as a fallback when the built-in WebSearch tool is unavailable or blocked. Use for finding documentation, comparing libraries, researching error messages, checking community discussion, or looking up packages, repos and news. Also use whenever a search must not silently return wrong results, and `sought fetch <url>` to read a known page as markdown when WebFetch is unavailable or blocked.
+description: Search the web and read web pages from the shell, with an audit trail of every engine consulted. Use whenever you need URLs you do not already have — documentation, error messages, library comparisons, community opinion, packages, repos, news — or the readable text of a known page (`sought fetch`). Works with no built-in web tools at all, and is also the fallback when a built-in WebSearch or WebFetch is unavailable or blocked. Use it whenever a search must not silently return wrong results.
+compatibility: Requires the `sought` CLI on PATH (uv tool install git+https://github.com/Ansarac/sought). Any agent with a shell tool can use it.
 ---
 
 # sought
 
-`sought` is a search CLI that degrades across independent engines and reports
-exactly what it tried. Use it whenever you need to *discover* URLs. Once you
-have a URL, fetch it normally — with WebFetch, or with `sought fetch <url>`
-when WebFetch is unavailable or you need to know exactly why a page could not
-be read.
+Two commands, kept apart: `sought "<query>"` *discovers* URLs,
+`sought fetch <url>` *reads* one. Both return a classified status, never a
+silent empty answer.
+
+Details live next to this file — read them only when the situation below
+calls for it:
+
+- [references/search.md](references/search.md) — every field and status of the search envelope, cooldowns, the cache
+- [references/fetch.md](references/fetch.md) — the full fetch envelope, extraction methods, statuses
+- [references/sources.md](references/sources.md) — vertical sources, `news` links, `brave_api` quota
+- [references/google.md](references/google.md) — only if the user has enabled the opt-in `google` engine
 
 ## The one rule
 
-**Never use WebFetch — or `sought fetch` — on a search engine results page.**
+**Never fetch a search engine results page yourself** — not with WebFetch,
+curl, `sought fetch` or any other HTTP tool. Engines do not just block
+scrapers; some serve HTTP 200 with plausible, unrelated results (measured:
+three Bing queries returned a supermarket homepage and a webmail help page).
+Nothing downstream can tell. Only `sought "<query>"` searches; fetch only
+URLs it returned or that you were given.
 
-Search engines do not simply block scrapers. Some serve HTTP 200 with a page
-of plausible, well-formatted, completely unrelated results. There is no error
-to catch, and the output looks exactly like a successful search. A measured
-example: three consecutive Bing queries through WebFetch returned a supermarket
-homepage and a webmail help page, with no indication anything was wrong.
-
-WebFetch on a *known URL* is accurate and cheap. Use it freely there. It is
-only search result pages that lie.
-
-## Basic use
+## Search
 
 ```bash
-sought "playwright bypass cloudflare 2025"        # JSON, for reading programmatically
-sought "rust async runtime comparison" --pretty   # table, for showing a human
-sought "..." --limit 5
-sought "..." --fresh                              # skip a cached result for this exact search
+sought "rust async runtime comparison" --limit 5   # JSON envelope (default; read this)
+sought "MCP web search" --source hn                # one source, no fallback
+sought "..." --pretty                              # table, for showing a human
 ```
-
-JSON is the default because the envelope matters:
 
 ```json
-{
-  "query": "anthropic claude pricing",
-  "engine": "startpage",
-  "cached": null,
-  "attempts": [
-    {"engine": "brave", "status": "rate_limited", "detail": "bot wall: \"verifying you're not a bot\""},
-    {"engine": "startpage", "status": "ok", "count": 8}
-  ],
-  "low_relevance": false,
-  "relevance": null,
-  "results": [{"title": "...", "url": "...", "snippet": "..."}]
-}
+{"query": "...", "engine": "startpage", "cached": null,
+ "attempts": [{"engine": "brave", "status": "rate_limited", "detail": "HTTP 429"},
+              {"engine": "startpage", "status": "ok", "count": 5}],
+ "low_relevance": false, "relevance": null,
+ "results": [{"title": "...", "url": "...", "snippet": "..."}]}
 ```
 
-## Reading the envelope
+Check three things before trusting the results:
 
-Check these fields before you trust the results.
+1. **`low_relevance: true`** — even the best single result covers under half
+   the query. Read it as "verify", not "discard": skim, reword, or re-run with
+   another `--source`. Common and usually harmless for `news`.
+2. **`attempts`** — why each engine did or did not answer. Empty `results`
+   with populated `attempts` is a real answer; empty `results` *and* empty
+   `attempts` is a sought bug — report it, do not conclude the web has nothing.
+3. **Exit code** — `0` results · `1` searched fine, nothing matched (reword) ·
+   `2` every source failed (read `attempts`, then `sought doctor`).
 
-**`low_relevance: true`** — even the *best single* result covers less than
-half of the query's significant words (weighted by length, so a rare word
-counts for more; a word found only in the URL counts partly). It does not mean
-nothing matched: a flagged result may well contain some query words. The check
-is biased toward flagging on purpose — a needless warning costs a second look,
-a missed decoy page costs a wrong answer — so read it as "verify", not as
-"discard".
-
-`relevance` says what the check saw. `null` when not flagged; when flagged:
-
-```json
-"relevance": {"best_coverage": 0.38, "matched": ["berkshire"], "missing": ["abel", "earnings"]}
-```
-
-`best_coverage` is the best result's score (the flag is raised below 0.5),
-`matched` the query words that result mentions in its title or snippet, and
-`missing` the words *no* result mentions. Results that share the query's
-subject but miss its rarer words mean the query is narrower than what was
-found: skim them, or reword. Results that match nothing, or only stopword-ish
-filler, are what a decoy page looks like: re-run with `--source startpage` or
-another engine before quoting anything.
-
-For `--source news`, titles are short and the snippet is only the publisher
-and the date, so partial coverage is normal and the flag is common. Look at
-`matched` / `missing` and the titles rather than throwing the results away.
-
-**`attempts`** — every engine consulted, in order, whether or not it worked.
-An empty `results` list with a populated `attempts` list is a real answer:
-it tells you *why* there is nothing. Statuses:
-
-| status | meaning | what to do |
-|---|---|---|
-| `ok` | answered | — |
-| `empty` | the engine said nothing matched | reword the query |
-| `rate_limited` | quota or bot wall, or still cooling down from one | it fell through to the next engine; fine |
-| `blocked` | network or engine refused | check `sought doctor` |
-| `timeout` | no response in time | retry, or raise `--timeout` |
-| `error` | unexpected failure, or `page not recognised` — the engine changed its layout and sought could not read it. Says nothing about the web | read `detail`; the chain already moved on. Persisting across runs ⇒ a sought bug worth reporting |
-
-If `results` is empty **and** `attempts` is empty, that is a bug — report it
-rather than concluding the web has no answer.
-
-**An `ok` attempt can carry a `detail` too.** It is something worth knowing
-about an answer that did arrive. `startpage` with `passed proof-of-work
-challenge in 39s` means Startpage made the browser compute a JavaScript
-challenge first; it explains a search that took most of a minute, and the
-results are as good as any. If the challenge does not finish in time (60 s by
-default), the attempt is `rate_limited` with `proof-of-work challenge not
-completed within 60s` and the chain moved on.
-
-**Cooldowns.** After an engine answers `rate_limited`, sought leaves it alone
-for a while (10 minutes by default) instead of asking again and prolonging the
-ban. It still appears in `attempts`, as `rate_limited` with a detail like
-`cooling down until 14:20, not asked this time (last refusal at 14:10: HTTP
-429)` — read that as "not asked", not as a fresh refusal. Retrying sooner will
-not help, and `--fresh` does not override it: use another engine or a vertical
-source. If the cause has been fixed (the user changed network or proxy),
-`sought config --clear-state` ends the cooldowns; do not run it just to retry
-an engine that refused you.
-
-**`cached`** — `null` for a search that just happened. `{"age_seconds": N}`
-means this exact search (same query, source, order and limit) succeeded N
-seconds ago and was replayed instead of asking the engines again; `attempts`
-is that original search's audit trail. Only searches with results are cached,
-for 15 minutes by default. Add `--fresh` if you need a live answer.
-
-## Exit codes
-
-`0` results · `1` searched fine, found nothing · `2` every source failed ·
-`130` interrupted.
-
-`1` and `2` mean opposite things. `1` is an answer; `2` is a broken pipe.
-
-## Reading a page: `sought fetch`
-
-```bash
-sought fetch https://docs.python.org/3/library/textwrap.html            # JSON
-sought fetch https://example.com/page --pretty --max-chars 5000
-```
-
-One plain HTTP request (OS trust store, sought's proxy rules, an honest
-`sought/<version>` User-Agent), readable content back as markdown. No browser:
-a JavaScript-only page is reported, not rendered. The envelope always has the
-same keys:
-
-```json
-{"url": "...", "final_url": "...", "status": "ok", "detail": "",
- "http_status": 200, "content_type": "text/html", "method": "readability",
- "title": "...", "content": "# ...markdown...",
- "chars": 13709, "total_chars": 13709, "truncated": false, "max_chars": 20000}
-```
-
-- **`truncated: true`** — `content` stops at `max_chars` (default 20000) of
-  `total_chars`. Re-run with `--max-chars 0` (or a larger N) if the part you
-  need is missing; do not conclude the page lacks it.
-- **`method`** — `readability`; `fallback:<selector>` (`main`, `article`,
-  `[role=main]`, `#content`, `body`) when readability found too little, with
-  `detail` saying so; `verbatim` for `text/*` and JSON, passed through as is.
-- **`detail` on `ok`** — e.g. `extracted 243 of the page's 3,059 words; the
-  rest was judged navigation`: the extract may be partial. Usually right
-  (a README inside a sidebar-heavy page), but check if something is missing.
-- **`final_url`** — where redirects ended; cite that one.
-
-| status | meaning | what to do |
-|---|---|---|
-| `ok` | content extracted | — |
-| `blocked` | connection failed or HTTP 4xx/5xx (`detail: "HTTP 404"`) | a 404 is a dead URL; search again. 401/403 may be the network — `sought doctor` |
-| `rate_limited` | HTTP 429, a Cloudflare challenge, or a bot-wall page | do not retry in a loop; find the content elsewhere |
-| `timeout` | no response within `--timeout` | retry once, or raise `--timeout` |
-| `error` | `no readable content — page needs JavaScript`, an unsupported type (`application/pdf`), or a body over 10 MB | the page cannot be read this way; look for another source (docs mirror, raw file, API) |
-
-Never `empty`: a page that yields no text is `error` with the reason, not `ok`
-with an empty `content`. Exit `0` on `ok`, `2` otherwise; the envelope is on
-stdout either way, the one-line reason on stderr.
-
-## Choosing a source
-
-Without `--source`, sought runs the general chain: **brave → startpage →
-marginalia**. Three independent networks and quotas, so one being rate limited
-says nothing about the next. Take this default for open-ended questions.
-
-With `--source`, that one source is asked and there is no fallback. Prefer a
-vertical when the question has an obvious home — the answer is exact, it costs
-about a second (`news` a few), and it is not affected by any bot wall.
-
-| `--source` | reach for it when |
+| status | do |
 |---|---|
-| `wikipedia` | a concept, a definition, background |
-| `github` | finding a repository, comparing projects by stars |
-| `hn` | community opinion and real-world experience reports |
+| `ok` / `empty` | — / reword the query |
+| `rate_limited` | nothing; the chain moved on. Includes "cooling down … not asked": do not retry, and do not run `--clear-state` to get around it |
+| `blocked` / `timeout` | `sought doctor` / retry once or raise `--timeout` |
+| `error` | read `detail`; persisting across runs means a sought bug |
+
+A slow search (tens of seconds) is usually Startpage's proof-of-work page,
+and the `ok` detail says so. `cached: {"age_seconds": N}` is a replay; add
+`--fresh` for a live answer. Full meanings: [references/search.md](references/search.md).
+
+## Choose a source
+
+Without `--source`, sought runs the general chain. If the user has a Brave
+API key configured, `brave_api` is asked first (about 2 s, no browser); then
+`brave → startpage → marginalia`, independent networks and quotas. Use it for
+open-ended questions.
+
+Prefer one vertical when the question has an obvious home — exact, ~1 s, no
+bot walls, no fallback:
+
+| `--source` | when |
+|---|---|
+| `wikipedia` | a concept, definition, background |
+| `github` | finding or comparing repositories |
+| `hn` | community opinion, experience reports |
 | `stackoverflow` | a specific error message or programming problem |
-| `npm` / `pypi` | package metadata. `pypi` resolves an *exact* name only — PyPI has no full-text search API |
-| `news` | anything time-sensitive; the general chain is weak on recency |
-| `brave` / `startpage` / `marginalia` | forcing one general engine, e.g. to retry after `low_relevance` |
+| `npm` / `pypi` | package metadata (`pypi`: exact name only) |
+| `news` | anything time-sensitive (a few seconds) |
+| `brave` / `startpage` / `marginalia` | force one general engine, e.g. after `low_relevance` |
 
-`startpage` reaches the Google index. `marginalia` is an independent crawl that
-favours small, non-commercial, technical sites — better for essays and
-documentation, weaker for anything commercial.
+Never enable an opt-in engine, set or ask for an API key, or put a key on a
+command line. Use `--source brave_api` or `--source google` only when the
+user has said they are set up. See [references/sources.md](references/sources.md).
 
-**`news` results** have the publisher and the date as their snippet
-(`CNBC · Sat, 08 Aug 2026 07:00:00 GMT`) and, normally, the publisher's own
-article URL. Google News only hands out `https://news.google.com/rss/articles/...`
-redirect links, which you cannot fetch (they answer with a JavaScript page);
-sought decodes them through an undocumented Google News endpoint. Any it could
-not decode stay as redirect links and the `ok` attempt's detail says how many,
-e.g. `3 of 10 article URLs left as news.google.com redirects` — and why, if
-Google News started refusing part-way. Do not WebFetch those; search for the
-title instead. Decoding is two extra requests per result, so `news` takes a
-few seconds rather than one (measured: about 8 s for 10 results).
+## Read a page
 
-### `google` (opt-in, usually off)
+If your harness has its own page-fetch tool (WebFetch, say), use it on known
+URLs. Otherwise — or when it is blocked, or you need to know exactly why a
+page could not be read — use `sought fetch`:
 
-The user may have switched on a `google` engine; it is off by default and
-never in the default chain. Do not ask for `--source google` unless the user
-has said it is enabled — if it is not, you get one `error` attempt whose
-detail names the config key, and exit code 2. Do not enable it yourself:
-it hides the browser's automation flag from Google, and heavy use from a
-shared network can get that network's IP blocked by Google for everyone on it.
-That is the user's decision.
+```bash
+sought fetch https://docs.python.org/3/library/textwrap.html --pretty
+sought fetch <url> --pretty --max-chars 0 > "${TMPDIR:-/tmp}/page.md"   # whole page, read in parts
+```
 
-When google results do appear, read them like this:
+`--pretty` prints the markdown itself: a status line, the content, and a last
+line that says whether it was cut. Content stops at 20000 characters by
+default, and a cut always ends with `— TRUNCATED: showing N of M characters`
+— if what you need is missing, re-run with `--max-chars 0` before concluding
+the page lacks it. Shell tools often truncate long output, so write a whole
+page to a file and read it in parts. The JSON envelope (without `--pretty`)
+is there when a script needs the fields.
 
-- The `ok` attempt's detail says `automation flag hidden (google.enabled)`.
-  That is a disclosure, not an error; the results are real Google results.
-- Their URLs are normally the real destinations: sought resolves Google's
-  `https://www.google.com/goto?url=...` redirects itself. Any it could not
-  resolve stay as `/goto` links (they still work, with one redirect hop), and
-  the detail says how many, e.g. `2 of 9 result URLs left as google.com/goto
-  redirects`.
-- `rate_limited` with `local budget 100/h used, next slot at 14:32 — not
-  asked` means sought held itself back under the user's hourly limit; Google
-  was not asked. Like a cooldown, it is not a refusal, and retrying before
-  that time gets the same answer. Use another engine.
-- `rate_limited` with `google /sorry wall` is Google refusing; a cooldown
-  follows.
+Exit `0` is `ok`; `2` is anything else, with the status on the first line:
 
-### `brave_api` (opt-in, needs the user's key)
+| status | do |
+|---|---|
+| `blocked` | `HTTP 404` is a dead URL — search again; 401/403 may be the network — `sought doctor` |
+| `rate_limited` | 429, Cloudflare challenge or bot wall — do not retry in a loop; find the content elsewhere |
+| `timeout` | retry once, or raise `--timeout` |
+| `error` | the page needs JavaScript, is not text (PDF), or is too large — find another source (docs mirror, raw file, API) |
 
-The official Brave Search API, if the user has set a key (`[brave_api]
-api_key` in the config, or `BRAVE_API_KEY`). With a key it is asked **first**
-in the default chain (unless `engines.order` places it, or `auto_first =
-false`), so a plain `sought "query"` usually comes back from `brave_api` in
-about two seconds with no browser started. Without a key it is not in the
-chain at all. Use `--source brave_api` only when the user has said a key is
-set — without one you get one `error` attempt naming both places, and exit
-code 2.
-Never set or ask for the key yourself, and never put one on a command line.
+No browser: a JavaScript-only page is reported, not rendered. An `ok` with a
+detail like `extracted 243 of the page's 3,059 words` may be partial. Cite
+the final URL after redirects. More: [references/fetch.md](references/fetch.md).
 
-- Same Brave index as `brave`, but no browser and no bot wall: a quick, exact
-  answer.
-- `rate_limited` here is the user's plan quota, not a bot wall; the detail
-  carries the quota per window (`1s window: limit 50, remaining 0, ...,
-  exhausted`; a `limit 0` window is "no cap reported", not spent). The chain
-  moves on to the next engine by itself; retrying will not help.
-- `error` with `API key rejected` means the key is wrong or revoked — tell the
-  user, do not retry.
-- At most 20 results per query. With a higher `--limit`, the `ok` attempt says
-  `capped at 20 results by the API`.
+## Workflow
 
-## Suggested workflow
-
-1. Vertical source if the question has one, otherwise the general chain.
-2. Check `low_relevance` and `attempts`.
-3. Pick promising URLs from the results.
-4. WebFetch those URLs for the actual content — or `sought fetch` them when
-   WebFetch is unavailable.
-
-Searching is discovery; fetching is reading. Keep them separate.
+1. A vertical source if the question has one, otherwise the general chain.
+2. Check `low_relevance`, `attempts` and the exit code.
+3. Pick the promising URLs.
+4. Read them — your harness's fetch tool or `sought fetch`.
 
 ## When something is wrong
 
 ```bash
-sought doctor            # full check, including live engine probes
+sought doctor            # full check with live probes; non-zero exit means a required check failed
 sought doctor --offline  # skip the network probes
-sought doctor --fix      # install a missing chromium
 ```
 
-`doctor` exits non-zero if any required check fails, so its summary line can be
-trusted. Individual engines being down is a warning, not a failure — that is
-what the chain is for. Only "every configured engine failed" is fatal. A
-`cooldowns:` line lists engines searches are currently skipping.
-
-Configuration (proxy, engine order, timeouts, cooldown, cache, TLS) lives at
-`~/.config/sought/config.toml`; `sought config --init` writes an annotated one.
+One engine being down is a warning, not a failure — routing around it is the
+chain's job. Configuration is `~/.config/sought/config.toml` (`sought config`
+shows it, secrets redacted); changing it is the user's decision.

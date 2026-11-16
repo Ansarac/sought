@@ -63,10 +63,11 @@ path = "src/sought/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sought"]
 
-# Ship the Claude skill inside the wheel so `uv tool install` alone is enough —
-# `sought install-skill` then works with no checkout present.
+# Ship the whole skill directory (SKILL.md and references/) inside the wheel so
+# `uv tool install` alone is enough — `sought install-skill` then works with no
+# checkout present.
 [tool.hatch.build.targets.wheel.force-include]
-"skills/sought/SKILL.md" = "sought/_skill/SKILL.md"
+"skills/sought" = "sought/_skill"
 
 [tool.ruff]
 line-length = 120

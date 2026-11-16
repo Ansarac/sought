@@ -190,7 +190,7 @@ src/sought/
   doctor.py      self-check; required failure ⇒ non-zero exit
   net.py         requests session with truststore + proxy
   state.py       ~/.cache/sought: cooldowns, short-lived result cache, google's hourly budget
-  skill.py       dual-branch skill lookup
+  skill.py       dual-branch skill lookup; installs the skill directory per agent (--target)
   errors.py      exceptions carrying their exit code
   output.py      JSON and pretty rendering
   engines/
@@ -200,7 +200,9 @@ src/sought/
     brave_api.py               opt-in by API key: official Brave Search API, plain HTTP
     marginalia.py              plain HTTP
     verticals.py               seven keyless APIs
-skills/sought/SKILL.md         force-included into the wheel
+skills/sought/                 the agent skill, whole directory force-included into the wheel
+  SKILL.md                     loaded whole on every trigger — keep it short
+  references/                  read on demand; every file linked from SKILL.md
 ```
 
 ## Conventions
@@ -215,6 +217,11 @@ rest is ordinary:
 - The skill ships inside the wheel via `[tool.hatch.build.targets.wheel.force-include]`,
   so `uv tool install` alone suffices. `locate_skill` has a source branch and a
   packaged branch — **both are hot paths**, test both.
+- The skill is harness-neutral: it must work for an agent whose only tool is
+  a shell (pi has no WebSearch or WebFetch), so it names `sought fetch` as the
+  way to read a page and a built-in fetch tool only as an alternative. Put
+  detail in `references/`, not SKILL.md; `tests/test_skill.py` holds the line
+  on size, frontmatter and links.
 
 ## Testing
 
