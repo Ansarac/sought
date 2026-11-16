@@ -233,16 +233,21 @@ When google results do appear, read them like this:
 ### `brave_api` (opt-in, needs the user's key)
 
 The official Brave Search API, if the user has set a key (`[brave_api]
-api_key` in the config, or `BRAVE_API_KEY`). It is not in the default chain;
-reach it with `--source brave_api` only when the user has said a key is set —
-without one you get one `error` attempt naming both places, and exit code 2.
+api_key` in the config, or `BRAVE_API_KEY`). With a key it is asked **first**
+in the default chain (unless `engines.order` places it, or `auto_first =
+false`), so a plain `sought "query"` usually comes back from `brave_api` in
+about two seconds with no browser started. Without a key it is not in the
+chain at all. Use `--source brave_api` only when the user has said a key is
+set — without one you get one `error` attempt naming both places, and exit
+code 2.
 Never set or ask for the key yourself, and never put one on a command line.
 
 - Same Brave index as `brave`, but no browser and no bot wall: a quick, exact
   answer.
 - `rate_limited` here is the user's plan quota, not a bot wall; the detail
-  carries the quota headers (`remaining 0, 0` — per second, per month). Use
-  another engine; retrying will not help.
+  carries the quota per window (`1s window: limit 50, remaining 0, ...,
+  exhausted`; a `limit 0` window is "no cap reported", not spent). The chain
+  moves on to the next engine by itself; retrying will not help.
 - `error` with `API key rejected` means the key is wrong or revoked — tell the
   user, do not retry.
 - At most 20 results per query. With a higher `--limit`, the `ok` attempt says

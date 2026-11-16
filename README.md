@@ -357,14 +357,20 @@ Brave's `X-RateLimit-*` headers. It is not the same as an HTTP-only `brave`:
 scraping Brave's results page without a browser is refused, and sought does
 not do it.
 
-A key is what turns it on (the free plan asks for a card at sign-up):
+A key is what turns it on (the free plan asks for a card at sign-up), and a
+key also puts it **first** in the chain: it is the fastest engine (no browser
+— Chromium is launched only if the chain gets past it), and placed after
+`brave` it would almost never be reached. Each search it answers spends one
+request of your plan; after a 429 the chain moves on to `brave` as usual.
 
 ```toml
 [brave_api]
 api_key = ""          # empty: use the BRAVE_API_KEY environment variable
+auto_first = true     # false: only where [engines] order names it, or --source
 
 [engines]
-order = ["brave_api", "brave", "startpage", "marginalia"]   # optional
+# Naming brave_api here overrides auto_first: it goes exactly where you put it.
+order = ["brave", "startpage", "marginalia"]
 ```
 
 ```bash

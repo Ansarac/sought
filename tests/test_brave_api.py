@@ -20,9 +20,9 @@ import pytest
 import requests
 
 from sought import search as search_mod
-from sought.config import BraveApiConfig, Config
+from sought.config import DEFAULT_ORDER, BraveApiConfig, Config
 from sought.engines import brave_api
-from sought.engines.base import EngineFailure
+from sought.engines.base import EngineFailure, Result
 
 KEY = "BSA-test-key-0123456789abcdef"
 KEYED = Config(brave_api=BraveApiConfig(api_key=KEY))
@@ -316,7 +316,6 @@ def test_asked_for_without_a_key_it_is_recorded_not_skipped():
 
 
 def test_in_the_chain_without_a_key_it_is_recorded_and_the_chain_moves_on(monkeypatch):
-    from sought.engines.base import Result
 
     monkeypatch.setitem(search_mod._GENERAL, "marginalia", lambda *_a, **_k: [Result("m", "https://m.example")])  # noqa: SLF001
 
@@ -340,6 +339,47 @@ def test_asking_for_it_alone_launches_no_chromium(http, response, saved, monkeyp
     chain = search_mod.run("rust", config=replace(KEYED, order=("brave_api",)), cache="off")
 
     assert single["engine"] == chain["engine"] == "brave_api"
+
+
+def test_answering_ahead_of_the_browser_engines_launches_no_chromium(http, response, saved, monkeypatch):
+    """The chain launches Chromium when it reaches brave/startpage, not before it starts.
+
+    Measured before the change: brave_api first in the order answered, and the
+    search still paid ~2.4 s for a Chromium nobody used (4.6 s vs 2.2 s).
+    """
+
+    def no_browser(*_a, **_k):
+        pytest.fail("a browser was launched although brave_api answered first")
+
+    monkeypatch.setattr(search_mod, "browser_session", no_browser)
+    http(response(200, saved("brave_api_results.synthetic.json")))
+
+    out = search_mod.run("rust", config=replace(KEYED, order=("brave_api", "brave", "startpage")), cache="off")
+
+    assert out["engine"] == "brave_api"
+    assert [a["engine"] for a in out["attempts"]] == ["brave_api"]
+
+
+def test_failing_ahead_of_the_browser_engines_launches_chromium_once_for_both(http, response, monkeypatch):
+    from contextlib import contextmanager
+
+    launches = []
+
+    @contextmanager
+    def fake_session(_config):
+        launches.append(1)
+        yield object()
+
+    monkeypatch.setattr(search_mod, "browser_session", fake_session)
+    monkeypatch.setitem(search_mod._GENERAL, "brave", lambda *_a, **_k: [])  # noqa: SLF001
+    monkeypatch.setitem(search_mod._GENERAL, "startpage", lambda *_a, **_k: [Result("s", "https://s.example")])  # noqa: SLF001
+    http(response(429, ""))
+
+    out = search_mod.run("rust", config=replace(KEYED, order=("brave_api", "brave", "startpage")), cache="off")
+
+    assert launches == [1]
+    assert (out["attempts"][0]["engine"], out["attempts"][0]["status"]) == ("brave_api", "rate_limited")
+    assert out["engine"] == "startpage"
 
 
 # --- the key never leaves -----------------------------------------------------
@@ -406,7 +446,7 @@ def test_the_default_template_documents_the_table():
 
     from sought import config as config_mod
 
-    assert tomllib.loads(config_mod.DEFAULT_CONFIG_TEMPLATE)["brave_api"] == {"api_key": ""}
+    assert tomllib.loads(config_mod.DEFAULT_CONFIG_TEMPLATE)["brave_api"] == {"api_key": "", "auto_first": True}
     assert "api-dashboard.search.brave.com" in config_mod.DEFAULT_CONFIG_TEMPLATE
     assert "brave_api" not in config_mod.DEFAULT_ORDER
 
@@ -462,8 +502,81 @@ def test_doctor_online_probes_a_keyed_engine_outside_the_order(http, response, s
 
     http(response(200, saved("brave_api_results.synthetic.json")))
 
-    check = doctor._brave_api_line(KEYED, offline=False, cooling=[])  # noqa: SLF001
+    manual = replace(KEYED, brave_api=replace(KEYED.brave_api, auto_first=False))
+    check = doctor._brave_api_line(manual, offline=False, cooling=[])  # noqa: SLF001
 
     assert check is not None
     assert check.ok is True
-    assert check.detail.startswith("3 results [key from config file; not in engines.order")
+    assert check.detail.startswith("3 results [key from config file; auto_first = false and not in engines.order")
+
+
+def test_doctor_leaves_an_auto_first_engine_to_the_chain_probes():
+    from sought import doctor
+
+    assert doctor._brave_api_line(KEYED, offline=False, cooling=[]) is None  # noqa: SLF001
+
+
+# --- first in the chain when keyed --------------------------------------------
+
+
+def test_a_key_puts_it_first_in_the_default_order():
+    assert KEYED.chain_order() == ("brave_api", *DEFAULT_ORDER)
+    assert KEYED.brave_api_auto_first() is True
+
+
+def test_an_env_key_puts_it_first_too(monkeypatch):
+    monkeypatch.setenv("BRAVE_API_KEY", KEY)
+
+    assert Config().chain_order()[0] == "brave_api"
+
+
+def test_without_a_key_the_order_is_untouched_and_nothing_is_added():
+    assert Config().chain_order() == DEFAULT_ORDER
+    assert Config().brave_api_auto_first() is False
+
+
+def test_an_order_that_names_it_keeps_the_users_placement():
+    cfg = replace(KEYED, order=("brave", "brave_api", "marginalia"))
+
+    assert cfg.chain_order() == ("brave", "brave_api", "marginalia")
+    assert cfg.brave_api_auto_first() is False
+
+
+def test_auto_first_false_keeps_it_out_of_the_chain():
+    cfg = replace(KEYED, brave_api=replace(KEYED.brave_api, auto_first=False))
+
+    assert cfg.chain_order() == DEFAULT_ORDER
+
+
+def test_the_chain_asks_it_first_with_a_key_and_the_default_order(http, response, saved, monkeypatch):
+    def no_browser(*_a, **_k):
+        pytest.fail("brave_api answered first; no browser should start")
+
+    monkeypatch.setattr(search_mod, "browser_session", no_browser)
+    http(response(200, saved("brave_api_results.synthetic.json")))
+
+    out = search_mod.run("rust", config=KEYED, cache="off")
+
+    assert out["engine"] == "brave_api"
+    assert [a["engine"] for a in out["attempts"]] == ["brave_api"]
+
+
+def test_doctor_shows_the_effective_order_and_why():
+    from sought import doctor
+
+    lines = doctor._config_checks(replace(KEYED, source_path=None))  # noqa: SLF001
+    order = next(c for c in lines if c.name == "engine order")
+
+    assert order.detail.startswith("brave_api → brave → startpage → marginalia")
+    assert "[brave_api first: key set, not named in engines.order]" in order.detail
+
+
+def test_auto_first_must_be_a_bool(tmp_path):
+    from sought import config as config_mod
+    from sought.errors import ConfigError
+
+    path = tmp_path / "config.toml"
+    path.write_text('[brave_api]\nauto_first = "yes"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=r"brave_api\.auto_first"):
+        config_mod.load(path)

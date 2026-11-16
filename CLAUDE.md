@@ -47,7 +47,10 @@ The opt-in `brave_api` engine (`engines/brave_api.py`) is not that path. It
 calls Brave's official, keyed JSON API, not the results page: there is no bot
 wall, and a 429 there is a real quota (`rate_limited`, with the
 `X-RateLimit-*` headers in the detail). A key (`[brave_api] api_key`, else
-`BRAVE_API_KEY`) is what enables it; never in `DEFAULT_ORDER`, and asked for
+`BRAVE_API_KEY`) is what enables it, and by the owner's decision a key also
+puts it first in the chain (`Config.chain_order`) unless `engines.order` names
+it or `auto_first = false` — placed after `brave` it is never reached. Still
+never in `DEFAULT_ORDER`; without a key nothing changes. Asked for
 without a key it records an `error` naming both. The key must never reach
 output, attempts, state or doctor — `_scrub` and the key-leak test enforce
 that, and `sought config` prints the file through `config.redact_secrets`
@@ -182,7 +185,7 @@ src/sought/
   cli.py         argument parsing, subcommand dispatch, exit codes
   search.py      the fallback chain — where the audit invariant lives
   fetch.py       `sought fetch <url>`: one plain-HTTP page → markdown (readability-lxml + markdownify), classified
-  browser.py     Playwright lifecycle; one Chromium for the chain, a separate one for google
+  browser.py     Playwright lifecycle; one Chromium for the chain (launched at the first browser engine), a separate one for google
   config.py      ~/.config/sought/config.toml
   doctor.py      self-check; required failure ⇒ non-zero exit
   net.py         requests session with truststore + proxy

@@ -554,7 +554,7 @@ def test_google_in_the_chain_does_not_launch_the_shared_browser(own_browser, sav
 
     out = search_mod.run("q", config=Config(order=("google",), google=GoogleConfig(enabled=True)))
 
-    assert seen == [False]
+    assert seen == []  # the shared Chromium is never even asked for
     assert out["engine"] == "google"
 
 
