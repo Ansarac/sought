@@ -33,8 +33,9 @@ Always the same keys:
   `total_chars`. Re-run with `--max-chars 0` (or a larger N) if the part you
   need is missing; do not conclude the page lacks it.
 - **`method`** — `readability`; `fallback:<selector>` (`main`, `article`,
-  `[role=main]`, `#content`, `body`) when readability found too little, with
-  `detail` saying so; `verbatim` for `text/*` and JSON, passed through as is.
+  `[role=main]`, `#content`, `body`) when readability found too little, or
+  kept under 2% of the page and a mostly-prose container holds far more
+  (`readability kept 346 of the page's 67,573 words (0.5%); used <body>`); `verbatim` for `text/*` and JSON, passed through as is.
 - **`detail` on `ok`** — e.g. `extracted 243 of the page's 3,059 words; the
   rest was judged navigation`: the extract may be partial. Usually right
   (a README inside a sidebar-heavy page), but check if something is missing.
