@@ -75,6 +75,32 @@ def test_an_extract_that_is_a_small_share_of_the_page_says_so():
     assert "Real article sentence" in page.content
 
 
+def test_an_extract_that_lost_the_page_is_replaced_by_a_prose_container(saved):
+    """Measured on RFC 9110: readability kept the acknowledgements, 0.5% of the page.
+
+    The fixture is the live page with some sections, the stylesheet and scripts removed.
+    """
+    page = fetch.extract(saved("fetch_rfc9110_trimmed.html"), "https://www.rfc-editor.org/rfc/rfc9110.html")
+
+    # `#content` is one 877-word section; it is no stand-in for the page.
+    assert page.method == "fallback:body"
+    assert "readability kept 346 of the page's" in page.detail
+    assert "used <body>" in page.detail
+    assert "15.5.19. 418 (Unused)" in page.content  # the section the issue found missing
+    assert "Acknowledgements" in page.content
+
+
+def test_a_lost_extract_is_not_swapped_for_navigation():
+    """A container that is mostly links is chrome; the fragment stays, disclosed as partial."""
+    article = "<div><p>" + ", ".join(["a sentence, with commas, that readability likes"] * 12) + "</p></div>"
+    links = "".join(f"<li><a href='/p/{i}'>Product {i} in the catalogue menu</a></li>" for i in range(1000))
+    page = fetch.extract(f"<html><body>{article}<nav><ul>{links}</ul></nav></body></html>", URL)
+
+    assert page.method == "readability"
+    assert "of the page's" in page.detail
+    assert "Product 7" not in page.content
+
+
 def test_a_javascript_shell_is_an_error_not_an_empty_page(saved):
     with pytest.raises(EngineFailure) as exc:
         fetch.extract(saved("fetch_js_shell.html"), "https://excalidraw.com/")

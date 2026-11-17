@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sought.config import BRAVE_API_KEY_ENV
-from sought.engines.base import EngineFailure, Result, ResultList
+from sought.engines.base import EngineFailure, Hold, Result, ResultList
 from sought.net import session
 
 if TYPE_CHECKING:
@@ -64,6 +65,14 @@ _RESET_HEADER = "X-RateLimit-Reset"
 _POLICY_HEADER = "X-RateLimit-Policy"
 _WINDOW_RE = re.compile(r"\bw=(\d+)")
 _SECONDS_PER = (("d", 86400), ("h", 3600), ("m", 60))
+# A spent window that resets at least this far ahead is the plan's quota, not a
+# burst limit — a 1 s window cannot reset an hour from now — and the engine is
+# held until the reset instead of being asked again every cooldown.
+_LONG_RESET = 3600
+# A reset further ahead than this, or beyond its own window's length, is not
+# believed: a garbage header must not shelve the engine. The longest window
+# Brave reports is 30 days. Such a 429 gets the ordinary cooldown.
+_MAX_HOLD = 31 * 86400
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -76,7 +85,7 @@ def search(query: str, *, config: Config, browser: object | None = None) -> list
     try:
         return _search(query, key=key, config=config)
     except EngineFailure as exc:
-        raise EngineFailure(exc.status, _scrub(exc.detail, key)) from None
+        raise EngineFailure(exc.status, _scrub(exc.detail, key), hold=exc.hold) from None
     except Exception as exc:  # noqa: BLE001 — the chain would print str(exc) unscrubbed
         # requests puts a header value it refuses (a key with a stray control
         # character, say) into its exception message.
@@ -185,10 +194,11 @@ def _classify_status(resp: requests.Response) -> EngineFailure:
 
     if status == _HTTP_TOO_MANY_REQUESTS:
         detail = f"HTTP 429{_code_note(brave_error)}"
-        quota = _quota(resp)
+        windows = _windows(resp)
+        quota = _quota(windows)
         if quota:
             detail += f" — {quota}"
-        return EngineFailure("rate_limited", detail)
+        return EngineFailure("rate_limited", detail, hold=_hold(windows))
 
     if brave_error is not None and (status in {_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN} or _is_auth_error(brave_error)):
         return EngineFailure("error", f"API key rejected — HTTP {status}{_code_note(brave_error)}")
@@ -238,38 +248,84 @@ def _code_note(error: dict[str, Any] | None) -> str:
     return f" ({code})" if isinstance(code, str) and code else ""
 
 
-def _quota(resp: requests.Response) -> str:
-    """Describe each quota window the headers report, by its length, and which one is spent.
+@dataclass(frozen=True)
+class _Window:
+    """One quota window, as the X-RateLimit-* headers report it; every field the raw header text."""
 
-    Window lengths come from `X-RateLimit-Policy`; without it the windows are
-    numbered rather than guessed. A window with a positive limit and nothing
-    remaining is marked exhausted; one whose limit is 0 is reported as having
-    no cap, never as spent (see the header comment above).
+    name: str
+    length: str
+    limit: str
+    left: str
+    reset: str
+
+    @property
+    def exhausted(self) -> bool:
+        """A positive limit with nothing left. A 0 limit is "no cap reported" (see above), never spent."""
+        return self.limit not in {"", "0"} and self.left == "0"
+
+
+def _windows(resp: requests.Response) -> list[_Window]:
+    """Read the quota windows the headers report, named by their length when `X-RateLimit-Policy` gives it.
+
+    Without the policy the windows are numbered rather than guessed.
     """
     limits = _header_list(resp, _LIMIT_HEADER)
     remaining = _header_list(resp, _REMAINING_HEADER)
     resets = _header_list(resp, _RESET_HEADER)
-    windows = [m.group(1) for m in map(_WINDOW_RE.search, _header_list(resp, _POLICY_HEADER)) if m]
-    count = max(len(limits), len(remaining), len(resets))
+    lengths = [m.group(1) for m in map(_WINDOW_RE.search, _header_list(resp, _POLICY_HEADER)) if m]
+
+    def at(items: list[str], i: int) -> str:
+        return items[i] if i < len(items) else ""
+
+    return [
+        _Window(
+            name=f"{_duration(at(lengths, i))} window" if at(lengths, i) else f"window {i + 1}",
+            length=at(lengths, i),
+            limit=at(limits, i),
+            left=at(remaining, i),
+            reset=at(resets, i),
+        )
+        for i in range(max(len(limits), len(remaining), len(resets)))
+    ]
+
+
+def _quota(windows: list[_Window]) -> str:
+    """Describe each quota window by its length, and which one is spent."""
     parts = []
-    for i in range(count):
-        name = f"{_duration(windows[i])} window" if i < len(windows) else f"window {i + 1}"
-        limit = limits[i] if i < len(limits) else ""
-        left = remaining[i] if i < len(remaining) else ""
+    for window in windows:
         facts = []
-        if limit == "0":
+        if window.limit == "0":
             facts.append("no cap reported (limit 0)")
         else:
-            if limit:
-                facts.append(f"limit {limit}")
-            if left:
-                facts.append(f"remaining {left}")
-        if i < len(resets) and resets[i]:
-            facts.append(f"resets in {_duration(resets[i])}")
-        if limit not in {"", "0"} and left == "0":
+            if window.limit:
+                facts.append(f"limit {window.limit}")
+            if window.left:
+                facts.append(f"remaining {window.left}")
+        if window.reset:
+            facts.append(f"resets in {_duration(window.reset)}")
+        if window.exhausted:
             facts.append("exhausted")
-        parts.append(f"{name}: {', '.join(facts)}")
+        parts.append(f"{window.name}: {', '.join(facts)}")
     return "quota — " + "; ".join(parts) if parts else ""
+
+
+def _hold(windows: list[_Window]) -> Hold | None:
+    """Hold the engine until a spent long window resets, or None for the ordinary cooldown.
+
+    Only a window that is exhausted and resets at least `_LONG_RESET` ahead
+    counts: a spent 1 s window keeps the ordinary cooldown. When several are
+    spent, the latest reset is the one that matters. A reset beyond
+    `_MAX_HOLD`, or beyond the window's own length when the policy names it,
+    is distrusted and the whole hold dropped rather than capped.
+    """
+    spent = [w for w in windows if w.exhausted and w.reset.isdigit() and int(w.reset) >= _LONG_RESET]
+    if not spent:
+        return None
+    window = max(spent, key=lambda w: int(w.reset))
+    seconds = int(window.reset)
+    if seconds > _MAX_HOLD or (window.length.isdigit() and seconds > int(window.length)):
+        return None
+    return Hold(seconds, f"quota spent ({window.name}), held until it resets per {_RESET_HEADER}")
 
 
 def _header_list(resp: requests.Response, header: str) -> list[str]:

@@ -29,6 +29,8 @@ from sought.net import session
 from sought.output import fetch_envelope
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import requests
     from lxml.html import HtmlElement
 
@@ -60,6 +62,16 @@ THIN_EXTRACT_WORDS = 50
 # Not a failure — PyPI's project page is 8% README and 92% sidebar, and
 # readability picks the README correctly — but the reader should know.
 PARTIAL_SHARE = 0.1
+# An extract under this share of the page did not pick the page, it picked a
+# fragment: measured on RFC 9110, readability scored the comma-heavy
+# acknowledgements highest and kept 346 of 67,573 words (0.5%). The content
+# containers are tried then, `body` included — RFC pages have no `main`. PyPI's
+# README at 8% is a correct pick, and well above this.
+LOST_SHARE = 0.02
+# A container standing in for such an extract must be mostly prose: under this
+# share of its words inside links. RFC 9110's body is 11% links; a sidebar or a
+# mega-menu is mostly links, and swapping to it would trade a fragment for chrome.
+MAX_LINK_SHARE = 0.5
 # Bot-wall markers are only checked on a page this thin. `classify_dead_page`
 # searches for words like "captcha" and "access denied", which an article may
 # well contain; a wall is a short page, so a long one is never second-guessed.
@@ -289,6 +301,16 @@ def extract(html: str, url: str) -> Extracted:
             method, detail = f"fallback:{selector}", f"readability found {words} words; used <{selector}>"
             words = fallback_words
     page_words = len(page_text.split())
+    if THIN_EXTRACT_WORDS <= words < page_words * LOST_SHARE:
+        rescue = _rescue(doc, words=words, page_words=page_words)
+        if rescue is not None:
+            selector, markdown, rescue_words = rescue
+            method = f"fallback:{selector}"
+            detail = (
+                f"readability kept {words:,} of the page's {page_words:,} words "
+                f"({words / page_words:.1%}); used <{selector}> ({rescue_words:,} words) instead"
+            )
+            words = rescue_words
     if MIN_WORDS <= words < page_words * PARTIAL_SHARE:
         detail = f"extracted {words:,} of the page's {page_words:,} words; the rest was judged navigation"
 
@@ -371,16 +393,38 @@ def _readability(html: str) -> tuple[str, int]:
     return to_markdown(summary), words
 
 
+def _containers(doc: HtmlElement) -> Iterator[tuple[str, HtmlElement, int]]:
+    """Yield (selector, visible copy, words) for each content container, in `_FALLBACK_XPATHS` order."""
+    for selector, xpath in _FALLBACK_XPATHS:
+        for element in doc.xpath(xpath):
+            clone = _visible(element)
+            yield selector, clone, len(clone.text_content().split())
+
+
 def _fallback(doc: HtmlElement) -> tuple[str, str, int] | None:
     """Try the usual content containers; return (selector, markdown, words) for the first with text."""
     import lxml.html
 
-    for selector, xpath in _FALLBACK_XPATHS:
-        for element in doc.xpath(xpath):
-            clone = _visible(element)
-            words = len(clone.text_content().split())
-            if words >= MIN_WORDS:
-                return selector, to_markdown(lxml.html.tostring(clone, encoding="unicode")), words
+    for selector, clone, words in _containers(doc):
+        if words >= MIN_WORDS:
+            return selector, to_markdown(lxml.html.tostring(clone, encoding="unicode")), words
+    return None
+
+
+def _rescue(doc: HtmlElement, *, words: int, page_words: int) -> tuple[str, str, int] | None:
+    """Find a container to replace an extract that kept under LOST_SHARE of the page, or None to keep it.
+
+    The first container that is itself no fragment (at least PARTIAL_SHARE of
+    the page), is mostly prose (under MAX_LINK_SHARE links) and holds at least
+    twice the extract's words outside links. RFC 9110 has a 877-word
+    `#content` section before its `body`: the first rule skips it.
+    """
+    import lxml.html
+
+    for selector, clone, total in _containers(doc):
+        linked = sum(len(a.text_content().split()) for a in clone.iter("a"))
+        if total >= page_words * PARTIAL_SHARE and linked < total * MAX_LINK_SHARE and total - linked >= 2 * words:
+            return selector, to_markdown(lxml.html.tostring(clone, encoding="unicode")), total
     return None
 
 

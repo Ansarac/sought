@@ -200,7 +200,7 @@ def _attempt(attempts: list[Attempt], name: str, call: Any) -> list[Result]:  # 
     try:
         results = call()
     except EngineFailure as exc:
-        attempts.append(Attempt(name, exc.status, exc.detail))
+        attempts.append(Attempt(name, exc.status, exc.detail, hold=exc.hold))
         return []
     except Exception as exc:  # noqa: BLE001 — one broken engine must not sink the chain
         attempts.append(Attempt(name, "error", f"{exc.__class__.__name__}: {exc}"))
