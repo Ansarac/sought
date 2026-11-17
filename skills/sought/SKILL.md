@@ -1,6 +1,6 @@
 ---
 name: sought
-description: Search the web and read web pages from the shell, with an audit trail of every engine consulted. Use whenever you need URLs you do not already have — documentation, error messages, library comparisons, community opinion, packages, repos, news — or the readable text of a known page (`sought fetch`). Works with no built-in web tools at all, and is also the fallback when a built-in WebSearch or WebFetch is unavailable or blocked. Use it whenever a search must not silently return wrong results.
+description: Search the web and read web pages from the shell, with an audit trail of every engine consulted. Use for any question whose answer should come from the web rather than memory — finding documentation, researching an error message, checking how others solved a problem or what the community thinks, comparing libraries, looking up packages, repos and news — and to read the text of a known page (`sought fetch`). Needs no built-in web tools; also the fallback when a built-in WebSearch or WebFetch is unavailable or blocked. Use it whenever a search must not silently return wrong results.
 compatibility: Requires the `sought` CLI on PATH (uv tool install git+https://github.com/Ansarac/sought). Any agent with a shell tool can use it.
 ---
 
