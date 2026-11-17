@@ -1,5 +1,73 @@
 # sought
 
+> [!IMPORTANT]
+> **Archived.** sought is no longer maintained. Its last release is
+> [`v0.1.0`](https://github.com/Ansarac/sought/releases/tag/v0.1.0), and the
+> rest of this README describes that release as it stands.
+
+## Status: superseded
+
+sought was built for one situation: an agent whose built-in web search was
+switched off by platform policy, on a network where scraping result pages
+meant fighting bot walls, a TLS-inspecting proxy and a shared egress IP.
+Keyed search APIs exposed to agents over MCP now cover that need with far
+less machinery: no browser, no bot walls, no proof-of-work pages to wait out.
+The owner replaced sought with
+[pi-web-access](https://github.com/nicobailon/pi-web-access) backed by the
+Brave Search API.
+
+### The replacement, as set up
+
+```bash
+npm install -g pi-web-access     # Node >= 22.19; keep peer deps (zod)
+claude mcp add -s user pi-web-access -- node "$(npm root -g)/pi-web-access/dist/mcp-cli.js"
+```
+
+`~/.pi/agent/web-search.json`:
+
+```json
+{"provider": "brave", "braveApiKey": "<your key>"}
+```
+
+Its tools are `web_search`, `fetch_content`, `get_search_content` and
+`source_check`.
+
+**Behind a proxy, configure it in that file.** pi-web-access does not pick
+up `HTTPS_PROXY`. Measured behind an authenticating corporate firewall: with
+no proxy configured, Brave's API answered with the firewall's HTTP 401 page,
+and `fetch_content` refused every URL as an internal address, because local
+DNS resolved it to the transparent proxy's private IP. Both cleared with:
+
+```json
+{"provider": "brave", "braveApiKey": "<your key>",
+ "proxy": "http://<proxy-host>:<port>", "ssrf": {"trustEnvProxy": true}}
+```
+
+### What the replacement does not do
+
+These were sought's reason for being. They are gone, and that is acceptable
+for now, but anyone who needs them should know what they are giving up:
+
+- **An audit trail on every search.** sought recorded each engine it
+  consulted, its status, and the reason it failed. An agent could therefore
+  tell "nothing matched" (exit 1) apart from "every source failed" (exit 2),
+  and a quota apart from a block.
+- **`low_relevance`.** A per-result coverage check against poisoned results
+  pages, which arrive as a valid HTTP 200 (see finding 1 below). A keyed API
+  makes poisoning much less likely, but nothing flags it if it happens.
+- **Keyless fallbacks.** A spent API quota now means no search. sought fell
+  through to independent engines and keyless vertical sources (`github`, `hn`,
+  `pypi`, `npm`, `stackoverflow`, `wikipedia`, `news`).
+
+If those properties matter again, `v0.1.0` still installs:
+`uv tool install git+https://github.com/Ansarac/sought@v0.1.0`. The
+measurements below and in [`docs/findings/`](docs/findings/) remain the
+useful record. They cover poisoned results, refused HTTP clients, Chromium's
+NSS trust database, PAC scripts on Windows and Google's `navigator.webdriver`
+check. All of them outlive the tool.
+
+---
+
 A search CLI that never fails silently. It degrades across independent engines
 and tells you exactly what it tried.
 
@@ -39,13 +107,13 @@ too little of the query.
 ## Install
 
 ```bash
-uv tool install git+https://github.com/Ansarac/sought
+uv tool install git+https://github.com/Ansarac/sought@v0.1.0
 ```
 
 Or from a checkout:
 
 ```bash
-git clone https://github.com/Ansarac/sought
+git clone --branch v0.1.0 https://github.com/Ansarac/sought
 cd sought
 uv tool install .
 ```

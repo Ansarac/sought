@@ -2,6 +2,10 @@
 
 Guidance for Claude Code when working in this repository.
 
+**The repository is archived** (final release `v0.1.0`; superseded by
+pi-web-access, see the README's "Status: superseded"). What follows describes
+the tool as released and the measurements behind it.
+
 ## What this is
 
 `sought` is a general-purpose web search CLI. Its distinguishing property is
